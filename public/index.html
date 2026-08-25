@@ -75,6 +75,12 @@
   .setnote{ font-size:12px; color:var(--mut); font-weight:600; margin-top:7px; line-height:1.5; }
   .mt10{margin-top:10px}.mt12{margin-top:12px}.mt18{margin-top:18px}
   .hidden{ display:none !important; }
+  .arcadelink{ display:inline-flex; align-items:center; gap:6px; margin-top:10px;
+    font-size:12.5px; font-weight:800; letter-spacing:.05em; color:var(--mut);
+    text-decoration:none; border:1px solid rgba(255,255,255,.14); border-radius:999px;
+    padding:7px 14px; background:rgba(255,255,255,.04); }
+  .arcadelink:hover{ color:var(--txt); border-color:rgba(255,255,255,.3); }
+
 
   /* ------- game ------- */
   .phasebar{ width:100%; max-width:520px; border-radius:18px; padding:12px 16px; margin-bottom:12px;
@@ -160,6 +166,7 @@
 <div id="home">
   <div class="wordmark"><span class="m">MAFIA</span> <span class="r">ROOMS</span></div>
   <div class="tagline">Someone at this table is lying. Find them. 5–12 friends.</div>
+  <a class="arcadelink" href="/">&#9666; all games &middot; needasix arcade</a>
   <div class="card">
     <div class="label">Your name</div>
     <input id="nameIn" maxlength="18" placeholder="e.g. Chanu">
@@ -213,6 +220,7 @@
     <div class="cup" id="overcup">🏆</div>
     <div class="wname" id="winname"></div>
     <button class="btn purple mt12" id="rematchBtn">Play again</button>
+    <div><a class="arcadelink" href="/">&#9666; more games at the arcade</a></div>
   </div>
   <div class="voicebar hidden" id="voicebar">
     <button id="voiceBtn" class="btn small plain">🎙 Join voice</button>
@@ -236,6 +244,7 @@ const $ = (id)=>document.getElementById(id);
 const esc = (s)=>String(s).replace(/[&<>"]/g,(c)=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 const APP_BASE = location.pathname.replace(/\/[^\/]*$/, "");
 const socket = io({ path: APP_BASE + "/socket.io" });
+if (APP_BASE === "") document.querySelectorAll(".arcadelink").forEach((a)=>{ a.style.display = "none"; });
 let S = { room:null, mySeat:-1 };
 let chatOpen = false, unread = 0, lastChatLen = 0;
 
