@@ -160,6 +160,10 @@
   #toast.show{ opacity:1; }
   .rules{ margin-top:14px; color:#6d75a0; font-size:12.5px; text-align:center; max-width:440px; line-height:1.55; }
   @media (prefers-reduced-motion:reduce){ .rolecard .inner{ transition:none; } }
+  .panel{ box-shadow:0 24px 50px rgba(0,0,0,.55), inset 0 1px 2px rgba(255,255,255,.06) !important; }
+  .btn{ box-shadow:0 3px 0 rgba(0,0,0,.3), 0 10px 22px rgba(0,0,0,.35); }
+  .btn:active{ transform:translateY(2px) scale(.985); }
+  @media (prefers-reduced-motion:no-preference){ .btn, .pill, .hcard, .tile, .entry, .cube{ will-change:transform; } }
 </style>
 </head>
 <body>
