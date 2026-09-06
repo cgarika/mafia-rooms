@@ -97,7 +97,7 @@
   .timer{ width:52px; height:52px; border-radius:50%; display:flex; align-items:center; justify-content:center;
     font-weight:900; font-size:15px; background:
     conic-gradient(var(--purple) calc(var(--pct,0)*1%), rgba(255,255,255,.08) 0); }
-  .timer span{ width:42px; height:42px; border-radius:50%; background:#161a33; display:flex; align-items:center; justify-content:center; }
+  .timer span{ width:42px; height:42px; font-size:13.5px; letter-spacing:-.02em; border-radius:50%; background:#161a33; display:flex; align-items:center; justify-content:center; }
   /* the game screen is viewport-bound: without a width the auto-fill player grid grows to its max-content
      (4 columns ≈ 475px) and drags the whole screen wider than a phone */
   #game{ width:100%; max-width:520px; min-width:0; }
@@ -115,6 +115,14 @@
   .rolecard.show .face.front{ opacity:0; pointer-events:none; }
   .rolecard.show .face.back{ opacity:1; }
   .face .re{ font-size:34px; }
+  /* once peeked, the covered card shrinks to a one-line chip — the role itself is never printed on the cover */
+  .rolecard.peeked .inner{ height:46px; }
+  .rolecard.peeked .face.front{ padding:0 14px; gap:10px; }
+  .rolecard.peeked .face.front .re{ font-size:20px; }
+  .rolecard.peeked .face.front .rt{ font-size:13.5px; }
+  .rolecard.peeked .face.front .rt::after{ content:" · tap to review"; color:var(--mut); font-weight:700; }
+  .rolecard.peeked .face.front .rd{ display:none; }
+  .rolecard.show .inner{ height:92px; }
   .face .rt{ font-weight:900; font-size:17px; }
   .face .rd{ font-size:12.5px; color:var(--mut); font-weight:600; line-height:1.4; }
   .face.mafia{ border-color:rgba(255,87,87,.55); background:linear-gradient(180deg,rgba(80,20,26,.85),rgba(40,12,20,.85)); }
@@ -220,7 +228,7 @@
     <button class="btn purple mt18" id="startBtn">Start the game</button>
     <button class="btn plain small mt10" id="leaveLobbyBtn">Leave</button>
   </div>
-  <div class="hint">Need 5+. Roles are dealt secretly: the Shadows strike by night · the Detective investigates · the Doctor protects · Villagers vote wisely.</div>
+  <div class="hint">Need 5+. Roles are dealt secretly: the Shadows strike by night · the Detective investigates · the Doctor protects · Villagers vote wisely. The village wins when every Shadow is gone; the Shadows win when they equal the town.</div>
 </div>
 
 <div id="game" class="hidden">
@@ -261,7 +269,6 @@
     </div>
   </div>
   <button class="btn plain small mt12" id="leaveGameBtn">Leave game</button>
-  <div class="rules">Night: the Shadows pick a victim (they see each other), the Detective investigates, the Doctor protects. Day: argue, then vote someone out. Village wins when all mafia are gone; mafia win when they equal the town.</div>
 </div>
 <div id="toast"></div>
 <script src="socket.io/socket.io.js"></script>
@@ -524,7 +531,7 @@ $("pgrid").addEventListener("click",(e)=>{
 setInterval(()=>{
   const r = S.room; if(!r || !r.phaseEndsAt){ $("timerNum").textContent="–"; $("timer").style.setProperty("--pct",0); return; }
   const left = Math.max(0, r.phaseEndsAt - Date.now());
-  $("timerNum").textContent = Math.ceil(left/1000);
+  $("timerNum").textContent = Math.ceil(left/1000) + "s";
   const total = r._total || (r._total = left);
   $("timer").style.setProperty("--pct", Math.round((left/Math.max(total,1))*100));
 }, 250);
@@ -640,7 +647,9 @@ socket.on("voice", async (msg)=>{
 
 /* role privacy: a revealed role covers itself again after a few seconds, and immediately when the app is backgrounded */
 (function(){ var rc=document.getElementById("rolecard"); if(!rc) return; var t=null;
-  new MutationObserver(function(){ if(rc.classList.contains("show")){ clearTimeout(t); t=setTimeout(function(){ rc.classList.remove("show"); }, 6000); } }).observe(rc,{ attributes:true, attributeFilter:["class"] });
+  new MutationObserver(function(){ if(rc.classList.contains("show")){ clearTimeout(t); t=setTimeout(function(){ rc.classList.remove("show"); }, 6000);
+      if(!rc.classList.contains("peeked")) rc.classList.add("peeked");   // guarded: adding a class inside a class observer would re-fire it forever
+    } }).observe(rc,{ attributes:true, attributeFilter:["class"] });
   document.addEventListener("visibilitychange", function(){ if(document.hidden) rc.classList.remove("show"); }); })();
 </script>
 </body>

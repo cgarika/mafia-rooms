@@ -175,7 +175,7 @@ function resolveVote(room) {
 }
 
 function label(role) {
-  return role === "mafia" ? "MAFIA" : role === "detective" ? "the Detective" : role === "doctor" ? "the Doctor" : "a Villager";
+  return role === "mafia" ? "a SHADOW" : role === "detective" ? "the Detective" : role === "doctor" ? "the Doctor" : "a Villager";
 }
 
 function checkWin(room) {
@@ -189,8 +189,8 @@ function checkWin(room) {
     room.phaseEndsAt = null;
     clearT(timers, room.code); clearT(botTimers, room.code);
     room.log = room.winner === "village"
-      ? "The last mafioso is gone. The village wins! All roles are revealed."
-      : "The mafia now outnumber the town. Mafia wins! All roles are revealed.";
+      ? "The last Shadow is gone. The village wins! All roles are revealed."
+      : "The Shadows now match the town. The Shadows win! All roles are revealed.";
     return true;
   }
   return false;
