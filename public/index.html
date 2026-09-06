@@ -96,12 +96,21 @@
     font-weight:900; font-size:15px; background:
     conic-gradient(var(--purple) calc(var(--pct,0)*1%), rgba(255,255,255,.08) 0); }
   .timer span{ width:42px; height:42px; border-radius:50%; background:#161a33; display:flex; align-items:center; justify-content:center; }
+  /* the game screen is viewport-bound: without a width the auto-fill player grid grows to its max-content
+     (4 columns ≈ 475px) and drags the whole screen wider than a phone */
+  #game{ width:100%; max-width:520px; min-width:0; }
+  #game .grid{ min-width:0; }
   .rolecard{ width:100%; max-width:520px; perspective:900px; margin-bottom:12px; cursor:pointer; }
   .rolecard .inner{ position:relative; height:92px; transform-style:preserve-3d; transition:transform .5s var(--ease); }
   .rolecard.show .inner{ transform:rotateX(180deg); }
-  .face{ position:absolute; inset:0; backface-visibility:hidden; border-radius:18px; border:1px solid var(--glassbd);
-    display:flex; align-items:center; gap:14px; padding:0 18px; background:rgba(26,30,52,.8); box-shadow:0 14px 34px rgba(0,0,0,.4); }
-  .face.back{ transform:rotateX(180deg); }
+  .face{ position:absolute; inset:0; -webkit-backface-visibility:hidden; backface-visibility:hidden; border-radius:18px; border:1px solid var(--glassbd);
+    display:flex; align-items:center; gap:14px; padding:0 18px; background:rgba(26,30,52,.8); box-shadow:0 14px 34px rgba(0,0,0,.4);
+    transition:opacity .2s linear .15s; }
+  .face.back{ transform:rotateX(180deg); opacity:0; }
+  /* belt and braces for WebKit, where the hidden back face can still bleed through a flipped card:
+     the hidden side also fades out mid-flip */
+  .rolecard.show .face.front{ opacity:0; pointer-events:none; }
+  .rolecard.show .face.back{ opacity:1; }
   .face .re{ font-size:34px; }
   .face .rt{ font-weight:900; font-size:17px; }
   .face .rd{ font-size:12.5px; color:var(--mut); font-weight:600; line-height:1.4; }
