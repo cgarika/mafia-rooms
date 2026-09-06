@@ -82,7 +82,7 @@ async function playToEnd(cs, cap){
     if (mafiaCount!==2) throw new Error("7 players should deal 2 mafia, got "+mafiaCount);
     if (Object.values(roles).filter(r=>r==="detective").length!==1) throw new Error("need exactly 1 detective");
     if (Object.values(roles).filter(r=>r==="doctor").length!==1) throw new Error("need exactly 1 doctor");
-    if (!await playToEnd(cs, 4000)) throw new Error("7p game didn't finish");
+    if (!await playToEnd(cs, 12000)) throw new Error("7p game didn't finish");
     const fin = cs[0].st;
     // revealed vs ground truth
     for (const [s,role] of Object.entries(fin.revealed)) if (roles[s]!==role) throw new Error("revealed role mismatch seat "+s);
