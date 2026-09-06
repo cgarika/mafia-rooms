@@ -12,6 +12,8 @@
   }
   html, body, *{ scrollbar-width:none; }
   ::-webkit-scrollbar{ width:0; height:0; display:none; }
+  :where(button, a, input, select, textarea, [role="button"], [tabindex]):focus-visible{ outline:3px solid #ffcd3c; outline-offset:3px; }
+  @media (prefers-reduced-motion:reduce){ *, *::before, *::after{ animation-duration:.001ms !important; animation-iteration-count:1 !important; transition-duration:.001ms !important; scroll-behavior:auto !important; } }
   *{ box-sizing:border-box; -webkit-tap-highlight-color:transparent; touch-action:manipulation; }
   body{
     margin:0; min-height:100vh; color:var(--txt);
@@ -100,6 +102,7 @@
      (4 columns ≈ 475px) and drags the whole screen wider than a phone */
   #game{ width:100%; max-width:520px; min-width:0; }
   #game .grid{ min-width:0; }
+  @media (max-width:480px){ #game .grid{ grid-template-columns:repeat(3,1fr); } }
   .rolecard{ width:100%; max-width:520px; perspective:900px; margin-bottom:12px; cursor:pointer; }
   .rolecard .inner{ position:relative; height:92px; transform-style:preserve-3d; transition:transform .5s var(--ease); }
   .rolecard.show .inner{ transform:rotateX(180deg); }
@@ -201,7 +204,7 @@
     <input id="codeIn" class="code" maxlength="6" placeholder="ABC123">
     <button class="btn blue mt12" id="joinBtn">Join room</button>
   </div>
-  <div class="hint">Everyone opens this page. One person creates a room and shares the 6-letter code. Roles are secret — mafia hunt by night, the town votes by day.</div>
+  <div class="hint">Everyone opens this page. One person creates a room and shares the 6-letter code. Roles are secret — the Shadows hunt by night, the town votes by day.</div>
 </div>
 
 <div id="lobby" class="hidden">
@@ -217,7 +220,7 @@
     <button class="btn purple mt18" id="startBtn">Start the game</button>
     <button class="btn plain small mt10" id="leaveLobbyBtn">Leave</button>
   </div>
-  <div class="hint">Need 5+. Roles are dealt secretly: Mafia kill by night · the Detective investigates · the Doctor protects · Villagers vote wisely.</div>
+  <div class="hint">Need 5+. Roles are dealt secretly: the Shadows strike by night · the Detective investigates · the Doctor protects · Villagers vote wisely.</div>
 </div>
 
 <div id="game" class="hidden">
@@ -251,14 +254,14 @@
     <div id="voicewho" class="voicewho"></div>
   </div>
   <div class="chatcard">
-    <button class="chattoggle" id="chatToggle">💬 Chat <span class="mafch hidden" id="mafch">MAFIA-ONLY AT NIGHT</span> <span class="badge hidden" id="unread">0</span></button>
+    <button class="chattoggle" id="chatToggle">💬 Chat <span class="mafch hidden" id="mafch">SHADOWS ONLY AT NIGHT</span> <span class="badge hidden" id="unread">0</span></button>
     <div id="chatbody">
       <div id="msgs"></div>
       <div class="chatrow"><input id="chatIn" maxlength="140" placeholder="Say something…"><button class="sendbtn" id="sendBtn">➤</button></div>
     </div>
   </div>
   <button class="btn plain small mt12" id="leaveGameBtn">Leave game</button>
-  <div class="rules">Night: mafia pick a victim (they see each other), the Detective investigates, the Doctor protects. Day: argue, then vote someone out. Village wins when all mafia are gone; mafia win when they equal the town.</div>
+  <div class="rules">Night: the Shadows pick a victim (they see each other), the Detective investigates, the Doctor protects. Day: argue, then vote someone out. Village wins when all mafia are gone; mafia win when they equal the town.</div>
 </div>
 <div id="toast"></div>
 <script src="socket.io/socket.io.js"></script>
@@ -346,9 +349,9 @@ if (!playerId){ playerId = "p_" + Math.random().toString(36).slice(2) + Date.now
 $("nameIn").value = localStorage.getItem("mName") || "";
 
 const ROLES = {
-  mafia:{ e:"🔪", t:"MAFIA", d:"Each night, pick someone to take out. You can see your partners — coordinate quietly. By day: blend in and lie well." },
-  detective:{ e:"🕵️", t:"Detective", d:"Each night, investigate one player. At dawn you'll learn if they're mafia. Use it — carefully." },
-  doctor:{ e:"🩺", t:"Doctor", d:"Each night, choose someone to protect (even yourself). If the mafia hit them, you save a life." },
+  mafia:{ e:"🌑", t:"SHADOW", d:"Each night, pick someone to take out. You can see your fellow Shadows — coordinate quietly. By day: blend in and lie well." },
+  detective:{ e:"🕵️", t:"Detective", d:"Each night, investigate one player. At dawn you'll learn if they're a Shadow. Use it — carefully." },
+  doctor:{ e:"🩺", t:"Doctor", d:"Each night, choose someone to protect (even yourself). If the Shadows strike them, you save a life." },
   villager:{ e:"🧑‍🌾", t:"Villager", d:"No powers — just your wits. Watch, argue, and vote the liars out." },
 };
 
@@ -396,7 +399,7 @@ function renderLobby(r){
   $("botnote").textContent = isHost ? "Bots fill seats and play their roles — handy for testing or a short table." : "The host manages bots.";
   const n = r.players.length, nm = n>=10?3:n>=7?2:1;
   $("rolenote").textContent = n>=r.minPlayers
-    ? `${nm} Mafia · 1 Detective · 1 Doctor · ${Math.max(0,n-nm-2)} Villagers — dealt secretly at start.`
+    ? `${nm} ${nm===1?"Shadow":"Shadows"} · 1 Detective · 1 Doctor · ${Math.max(0,n-nm-2)} Villagers — dealt secretly at start.`
     : "Roles appear when there are enough players.";
   $("startBtn").classList.toggle("hidden", !isHost);
   $("startBtn").disabled = r.players.length < r.minPlayers;
@@ -452,7 +455,7 @@ function renderGame(r){
     $("roleTitle").textContent = role.t;
     let d = role.d;
     if (r.yourRole==="detective" && (r.probeLog||[]).length){
-      d = r.probeLog.map(x=>`${r.players[x.t]?esc(r.players[x.t].name):"?"} → ${x.mafia?"MAFIA ❗":"not mafia ✓"}`).join(" · ");
+      d = r.probeLog.map(x=>`${r.players[x.t]?esc(r.players[x.t].name):"?"} → ${x.mafia?"SHADOW ❗":"not a Shadow ✓"}`).join(" · ");
     }
     $("roleDesc").innerHTML = d;
     $("roleback").className = "face back " + r.yourRole;
@@ -494,8 +497,8 @@ function renderGame(r){
   $("log").textContent = r.log || "";
   $("overbox").classList.toggle("hidden", r.status!=="over");
   if (r.status==="over"){
-    $("overcup").textContent = r.winner==="mafia" ? "🔪" : "🏆";
-    $("winname").textContent = r.winner==="mafia" ? "Mafia wins" : "The village wins";
+    $("overcup").textContent = r.winner==="mafia" ? "🌑" : "🏆";
+    $("winname").textContent = r.winner==="mafia" ? "The Shadows win" : "The village wins";
     $("winname").style.color = r.winner==="mafia" ? "#ff5757" : "#33d17a";
     $("rematchBtn").classList.toggle("hidden", S.mySeat !== r.hostSeat);
   }
@@ -634,6 +637,11 @@ socket.on("voice", async (msg)=>{
     } else if (d.ice){ await pc.addIceCandidate(d.ice); }
   }catch(e){}
 });
+
+/* role privacy: a revealed role covers itself again after a few seconds, and immediately when the app is backgrounded */
+(function(){ var rc=document.getElementById("rolecard"); if(!rc) return; var t=null;
+  new MutationObserver(function(){ if(rc.classList.contains("show")){ clearTimeout(t); t=setTimeout(function(){ rc.classList.remove("show"); }, 6000); } }).observe(rc,{ attributes:true, attributeFilter:["class"] });
+  document.addEventListener("visibilitychange", function(){ if(document.hidden) rc.classList.remove("show"); }); })();
 </script>
 </body>
 </html>
