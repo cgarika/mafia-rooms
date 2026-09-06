@@ -502,6 +502,7 @@ function renderGame(r){
 
   $("voterow").classList.toggle("hidden", !(mode==="vote"));
   $("log").textContent = r.log || "";
+  $("log").classList.toggle("hidden", /^Night \d+\. The town sleeps\.$/.test(r.log || ""));   // the phase card already says it
   $("overbox").classList.toggle("hidden", r.status!=="over");
   if (r.status==="over"){
     $("overcup").textContent = r.winner==="mafia" ? "🌑" : "🏆";
