@@ -10,6 +10,8 @@
     --txt:#eef0ff; --mut:#8f97bd; --glassbd:rgba(255,255,255,.1);
     --ease:cubic-bezier(.2,0,0,1);
   }
+  html, body, *{ scrollbar-width:none; }
+  ::-webkit-scrollbar{ width:0; height:0; display:none; }
   *{ box-sizing:border-box; -webkit-tap-highlight-color:transparent; touch-action:manipulation; }
   body{
     margin:0; min-height:100vh; color:var(--txt);
@@ -353,7 +355,11 @@ $("createBtn").onclick = ()=>{ const n=myName(); if(n) socket.emit("create",{ na
 $("joinBtn").onclick = ()=>{ const n=myName(); const c=$("codeIn").value.trim().toUpperCase(); if(!c) return toast("Enter the room code."); if(n) socket.emit("join",{ code:c, name:n, playerId, avatar:myAvatar }); };
 socket.on("err",(m)=>toast(m));
 socket.on("joined",({code})=>{ localStorage.setItem("mRoom",code); });
-window.addEventListener("load",()=>{ const c=localStorage.getItem("mRoom"); const n=localStorage.getItem("mName");
+window.addEventListener("load",()=>{
+  // Inside the GameNest app the shell decides the room (create / join by code): never also re-join the room saved
+  // by an earlier session, or this socket ends up in two rooms with interleaved states.
+  if (window.GN && (GN.code || GN.create || GN.prewarm)) return;
+  const c=localStorage.getItem("mRoom"); const n=localStorage.getItem("mName");
   if (c && n) socket.emit("join",{ code:c, name:n, playerId, avatar:myAvatar }); });
 
 /* lobby */
