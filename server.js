@@ -21,6 +21,8 @@ const T = {
   vote: Number(process.env.VOTE_MS || 25000),
 };
 const BOT_MS = Math.max(1, Number(process.env.BOT_MS || 1200));
+const AFK_MS = Math.max(200, Number(process.env.AFK_MS || 5000));   // T1: the phase ends this soon once only disconnected players are still to act
+const TIMEOUTS_TO_BOT = 3;                                              // consecutive missed phases before a bot takes the seat
 
 const rooms = new Map();
 const roomSockets = new Map();
@@ -91,6 +93,52 @@ function nightDone(room) {
   return need.every((p) => room.nightActs[seatOf(room, p)] != null);
 }
 function seatOf(room, p) { return room.players.indexOf(p); }
+
+/* T1 AFK policy helpers. "Pending" = alive humans who still owe an action in this phase. */
+function pendingActors(room) {
+  if (room.phase === "night") return alive(room).filter((p) => p.role !== "villager" && !p.bot && !p.botControlled && room.nightActs[seatOf(room, p)] == null);
+  if (room.phase === "vote") return alive(room).filter((p) => !p.bot && !p.botControlled && room.votes[seatOf(room, p)] === undefined);
+  return [];
+}
+/* Once everyone still to act is disconnected, the phase ends within AFK_MS instead of the full clock. */
+function refreshAfkClock(room) {
+  if (room.status !== "playing" || !["night", "vote"].includes(room.phase)) return;
+  const pend = pendingActors(room);
+  if (!pend.length || pend.some((p) => p.connected)) return;
+  const soon = Date.now() + AFK_MS;
+  if (room.phaseEndsAt && room.phaseEndsAt <= soon) return;
+  room.phaseEndsAt = soon;
+  clearT(timers, room.code);
+  timers.set(room.code, setTimeout(() => onPhaseTimeout(room.code), AFK_MS));
+}
+/* The bot heuristic for one player (used for real bots, bot-controlled seats and auto-played timeouts). */
+function botDecide(room, p) {
+  const s = seatOf(room, p);
+  const livingSeats = room.players.map((q, i) => (q.alive && !q.left ? i : -1)).filter((i) => i >= 0);
+  const pick = (arr) => arr[crypto.randomInt(arr.length)];
+  if (room.phase === "night" && p.role !== "villager" && !room.nightActs[s]) {
+    if (p.role === "mafia") { const targets = livingSeats.filter((t) => room.players[t].role !== "mafia"); if (targets.length) room.nightActs[s] = { kill: pick(targets) }; }
+    else if (p.role === "doctor") room.nightActs[s] = { save: pick(livingSeats) };
+    else if (p.role === "detective") { const targets = livingSeats.filter((t) => t !== s); room.nightActs[s] = { probe: targets.length ? pick(targets) : s }; }
+    return true;
+  }
+  if (room.phase === "vote" && room.votes[s] === undefined) {
+    let targets = livingSeats.filter((t) => t !== s);
+    if (p.role === "mafia") targets = targets.filter((t) => room.players[t].role !== "mafia");
+    room.votes[s] = targets.length && crypto.randomInt(4) > 0 ? pick(targets) : -1;
+    return true;
+  }
+  return false;
+}
+/* The human acts (or reconnects): take the seat back from the bot and reset the timeout streak. */
+function humanIsBack(room, p, reason) {
+  const wasBot = !!p.botControlled;
+  p.timeouts = 0;
+  if (!wasBot) return false;
+  p.botControlled = false;
+  room.log = `${p.name} is back at the table${reason ? " (" + reason + ")" : ""}.`;
+  return true;
+}
 
 function resolveNight(room) {
   // mafia plurality
@@ -199,10 +247,17 @@ function checkWin(room) {
 function onPhaseTimeout(code) {
   const room = rooms.get(code);
   if (!room || room.status !== "playing") return;
+  const notes = [];
+  for (const p of pendingActors(room)) {            // humans who never acted this phase: play it for them
+    p.timeouts = (p.timeouts || 0) + 1;
+    if (p.timeouts >= TIMEOUTS_TO_BOT && !p.botControlled) { p.botControlled = true; notes.push(`A bot is playing for ${p.name} (missed ${TIMEOUTS_TO_BOT} in a row).`); }
+    botDecide(room, p);
+  }
   if (room.phase === "reveal") beginNight(room);
   else if (room.phase === "night") resolveNight(room);
   else if (room.phase === "day") beginVote(room);
   else if (room.phase === "vote") resolveVote(room);
+  if (notes.length) room.log = `${notes.join(" ")} ${room.log || ""}`.trim();
   bump(room);
 }
 
@@ -225,7 +280,7 @@ function stateFor(room, seat) {
     hostSeat: room.players.findIndex((p) => p.id === room.host),
     minPlayers: MIN_PLAYERS, maxPlayers: MAX_PLAYERS,
     players: room.players.map((p, s) => ({
-      name: p.name, avatar: p.avatar, bot: !!p.bot, left: p.left,
+      name: p.name, avatar: p.avatar, bot: !!p.bot, botControlled: !!p.botControlled, left: p.left,
       connected: p.connected, alive: p.alive !== false,
       voted: room.phase === "vote" ? room.votes[s] !== undefined : false,
     })),
@@ -307,34 +362,15 @@ function scheduleBots(room) {
 function botsAct(code) {
   const room = rooms.get(code);
   if (!room || room.status !== "playing") return;
-  const livingSeats = room.players.map((p, s) => (p.alive && !p.left ? s : -1)).filter((s) => s >= 0);
-  const pick = (arr) => arr[crypto.randomInt(arr.length)];
   let acted = false;
   for (const p of room.players) {
-    const s = seatOf(room, p);
-    if (!p.bot || !p.alive || p.left) continue;
-    if (room.phase === "night" && p.role !== "villager" && !room.nightActs[s]) {
-      if (p.role === "mafia") {
-        const targets = livingSeats.filter((t) => room.players[t].role !== "mafia");
-        if (targets.length) room.nightActs[s] = { kill: pick(targets) };
-      } else if (p.role === "doctor") {
-        room.nightActs[s] = { save: pick(livingSeats) };
-      } else if (p.role === "detective") {
-        const targets = livingSeats.filter((t) => t !== s);
-        room.nightActs[s] = { probe: targets.length ? pick(targets) : s };
-      }
-      acted = true;
-    }
-    if (room.phase === "vote" && room.votes[s] === undefined) {
-      let targets = livingSeats.filter((t) => t !== s);
-      if (p.role === "mafia") targets = targets.filter((t) => room.players[t].role !== "mafia");
-      room.votes[s] = targets.length && crypto.randomInt(4) > 0 ? pick(targets) : -1;
-      acted = true;
-    }
+    if (!(p.bot || p.botControlled) || !p.alive || p.left) continue;
+    if (botDecide(room, p)) acted = true;
   }
   if (room.phase === "night" && nightDone(room)) { resolveNight(room); bump(room); return; }
   if (room.phase === "vote" && alive(room).every((p) => room.votes[seatOf(room, p)] !== undefined)) { resolveVote(room); bump(room); return; }
   if (acted) bump(room);
+  refreshAfkClock(room);
   scheduleBots(room);
 }
 
@@ -376,7 +412,7 @@ io.on("connection", (socket) => {
     if (!room) return socket.emit("err", "No room with that code.");
     socket.data.playerId = playerId;
     const existing = room.players.find((p) => p.id === playerId);
-    if (existing) { existing.connected = true; existing.left = false; attach(code); socket.emit("joined", { code }); bump(room); return; }
+    if (existing) { existing.connected = true; existing.left = false; humanIsBack(room, existing, "reconnected"); attach(code); socket.emit("joined", { code }); bump(room); return; }
     if (room.status !== "lobby") return socket.emit("err", "That game already started.");
     if (room.players.length >= MAX_PLAYERS) return socket.emit("err", "Room is full (12).");
     name = clean(name, 18); if (!name) return socket.emit("err", "Pick a name first.");
@@ -414,13 +450,14 @@ io.on("connection", (socket) => {
     const seat = room.players.findIndex((p) => p.id === socket.data.playerId);
     const me = room.players[seat];
     if (!me || !me.alive || me.left) return;
+    humanIsBack(room, me, "took the seat back");
     const t = kill ?? save ?? probe;
     if (!Number.isInteger(t) || !room.players[t] || !room.players[t].alive) return;
     if (me.role === "mafia" && kill != null && room.players[t].role !== "mafia") room.nightActs[seat] = { kill: t };
     else if (me.role === "doctor" && save != null) room.nightActs[seat] = { save: t };
     else if (me.role === "detective" && probe != null && t !== seat) room.nightActs[seat] = { probe: t };
     else return;
-    if (nightDone(room)) resolveNight(room);
+    if (nightDone(room)) resolveNight(room); else refreshAfkClock(room);
     bump(room);
   });
 
@@ -430,11 +467,17 @@ io.on("connection", (socket) => {
     const seat = room.players.findIndex((p) => p.id === socket.data.playerId);
     const me = room.players[seat];
     if (!me || !me.alive || me.left) return;
+    humanIsBack(room, me, "took the seat back");
     if (target === -1) room.votes[seat] = -1;
     else if (Number.isInteger(target) && room.players[target] && room.players[target].alive && target !== seat) room.votes[seat] = target;
     else return;
-    if (alive(room).every((p) => room.votes[seatOf(room, p)] !== undefined)) resolveVote(room);
+    if (alive(room).every((p) => room.votes[seatOf(room, p)] !== undefined)) resolveVote(room); else refreshAfkClock(room);
     bump(room);
+  });
+  socket.on("takeSeat", () => {
+    const room = currentRoom(); if (!room) return;
+    const self = room.players.find((q) => q.id === socket.data.playerId);
+    if (self && humanIsBack(room, self, "took the seat back")) bump(room);
   });
   socket.on("pushToken", ({ token } = {}) => { const room = currentRoom(); if (!room) return; const p = room.players.find((q) => q.id === socket.data.playerId); if (p && typeof token === "string" && /^[0-9a-f]{32,200}$/i.test(token)) p.pushToken = token; });
   socket.on("presence", ({ away } = {}) => { const room = currentRoom(); if (!room) return; const p = room.players.find((q) => q.id === socket.data.playerId); if (p) p.away = !!away; });
@@ -534,7 +577,7 @@ io.on("connection", (socket) => {
       room.v++;
     }
     detach();
-    if (rooms.has(room.code)) sendState(room.code);
+    if (rooms.has(room.code)) { refreshAfkClock(room); sendState(room.code); }
   });
 });
 

@@ -246,6 +246,7 @@
   </div>
   <div class="grid" id="pgrid"></div>
   <div class="actionhint" id="actionhint"></div>
+  <button class="btn hidden" id="seatBackBtn" style="width:auto;margin:6px auto 0;display:block" onclick="socket.emit('takeSeat')">Take my seat back</button>
   <div class="voterow hidden" id="voterow">
     <button class="btn plain" id="skipBtn">Skip vote</button>
   </div>
@@ -476,7 +477,7 @@ function renderGame(r){
   $("pgrid").innerHTML = r.players.map((p,i)=>{
     const dead = !p.alive || p.left;
     const revealedRole = r.revealed && r.revealed[i];
-    let status = dead ? (revealedRole ? "was " + (ROLES[revealedRole]?ROLES[revealedRole].t:revealedRole) : "out") : (p.connected?"":"reconnecting…");
+    let status = dead ? (revealedRole ? "was " + (ROLES[revealedRole]?ROLES[revealedRole].t:revealedRole) : "out") : (p.botControlled?"🤖 bot playing":(p.connected?"":"reconnecting…"));
     if (!dead && r.phase==="vote") status = p.voted ? "voted" : "thinking…";
     if (!dead && r.phase==="night" && iAmMafia && r.mafiaPicks && r.mafiaPicks[i]!=null && mafiaSeats.includes(i))
       status = "targets " + esc(r.players[r.mafiaPicks[i]] ? r.players[r.mafiaPicks[i]].name : "?");
@@ -493,8 +494,10 @@ function renderGame(r){
   }).join("");
 
   const me = r.players[S.mySeat];
+  $("seatBackBtn").classList.toggle("hidden", !(me && me.botControlled && me.alive && r.status==="playing"));
   if (r.status==="over") $("actionhint").innerHTML = "";
   else if (me && !me.alive) $("actionhint").innerHTML = "You're out — watch the chaos unfold. <b>No spoilers out loud!</b>";
+  else if (me && me.botControlled) $("actionhint").innerHTML = "A bot is playing your role — <b>take your seat back</b> when you are ready.";
   else if (mode==="act") $("actionhint").innerHTML = mine!=null ? `Locked on <b>${esc(r.players[mine].name)}</b> — tap another to change.` : "Tap a player card to choose.";
   else if (mode==="vote") $("actionhint").innerHTML = mine!=null ? `Voting <b>${esc(r.players[mine].name)}</b> — tap to change, or skip.` : "Tap a player to vote.";
   else if (r.phase==="night") $("actionhint").innerHTML = "Nothing for you to do tonight. Look asleep.";

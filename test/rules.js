@@ -76,7 +76,8 @@ async function playToEnd(cs, cap){
     cs[0].emit("create",{ name:"P0", playerId:"m0", avatar:"🦊" }); await sleep(250);
     for (let i=1;i<7;i++) cs[i].emit("join",{ code, name:"P"+i, playerId:"m"+i, avatar:"🐼" });
     await sleep(350);
-    cs[0].emit("start"); await sleep(250);
+    cs[0].emit("start");
+    for (let k=0;k<120 && cs.some(c=>!c.role);k++) await sleep(25);   // roles arrive with the first playing state; poll instead of a fixed wait
     const roles = {}; cs.forEach(c=>roles[c.seat]=c.role);
     const mafiaCount = Object.values(roles).filter(r=>r==="mafia").length;
     if (mafiaCount!==2) throw new Error("7 players should deal 2 mafia, got "+mafiaCount);
@@ -120,6 +121,48 @@ async function playToEnd(cs, cap){
     }
     console.log("PASS bot games x3 with rematch — winners:", winners.join(", "));
     A.close();
+
+    // ---- Test 3 (T1 AFK policy): own server on 3221 with 2 s night/vote clocks and a 250 ms AFK clock ----
+    {
+      const { spawn } = require("child_process");
+      const P=3221, URL2="http://localhost:"+P, VOTE=2000, AFK=250;
+      const srv = spawn(process.execPath, ["server.js"], { env: { ...process.env, PORT:String(P), REVEAL_MS:"40", NIGHT_MS:String(VOTE), DAY_MS:"60", VOTE_MS:String(VOTE), AFK_MS:String(AFK), BOT_MS:"5" }, stdio:"ignore" });
+      await sleep(600);
+      const mk2=(name)=>{ const c=io(URL2,{transports:["websocket"],reconnection:false}); c.nm2=name; c.st=null; c.seat=-1; c.role=null; c.logs=[]; c.on("state",({room,mySeat})=>{ c.st=room; c.seat=mySeat; if(room.yourRole) c.role=room.yourRole; if(room&&room.log) c.logs.push(room.log); }); return c; };
+      const until=async(fn,ms=6000)=>{ const t0=Date.now(); while(Date.now()-t0<ms){ if(fn()) return true; await sleep(15);} return false; };
+      // 5 humans; the auto-driver acts for everyone except the "idle" seat
+      const room5=async()=>{ const cs=[]; for(let i=0;i<5;i++) cs.push(mk2("Q"+i)); await sleep(250); let code=null; cs[0].on("joined",j=>{code=j.code;}); cs[0].emit("create",{name:"Q0",playerId:"q0"+Math.random(),avatar:"🦊"}); await until(()=>code); for(let i=1;i<5;i++) cs[i].emit("join",{code,name:"Q"+i,playerId:"q"+i+Math.random(),avatar:"🐼"}); await until(()=>cs[0].st&&cs[0].st.players.length===5); cs[0].emit("start"); await until(()=>cs.every(c=>c.role)); return cs; };
+      const drive=(c)=>{ const r=c.st; if(!r||r.status!=="playing") return; const me=r.players[c.seat]; if(!me||!me.alive) return; const living=r.players.map((p,i)=>p.alive&&!p.left?i:-1).filter(i=>i>=0); if(r.phase==="night"){ if(c.role==="mafia"&&!(r.yourAct&&r.yourAct.kill!=null)){ const t=living.filter(i=>!(r.mafiaSeats||[]).includes(i)); if(t.length) c.emit("act",{kill:pick(t)}); } else if(c.role==="doctor"&&!(r.yourAct&&r.yourAct.save!=null)) c.emit("act",{save:pick(living)}); else if(c.role==="detective"&&!(r.yourAct&&r.yourAct.probe!=null)){ const t=living.filter(i=>i!==c.seat); if(t.length) c.emit("act",{probe:pick(t)}); } } else if(r.phase==="vote"&&!(r.votes&&r.votes[c.seat]!==undefined)){ const t=living.filter(i=>i!==c.seat); c.emit("vote",{target:t.length?pick(t):-1}); } };
+      try {
+        // 3a. the only pending voter is disconnected → the vote resolves within AFK_MS, not VOTE_MS
+        { const cs=await room5(); const idle=cs[4]; const others=cs.slice(0,4); others.forEach(c=>c.on("state",()=>setTimeout(()=>drive(c),8)));
+          idle.disconnect();
+          if(!(await until(()=>others[0].st&&others[0].st.phase==="vote", 8000))) throw new Error("AFK: never reached a vote");
+          const t0=Date.now(); const dayNo=others[0].st.day;
+          if(!(await until(()=>others[0].st.phase!=="vote"||others[0].st.day!==dayNo||others[0].st.status==="over", VOTE+800))) throw new Error("AFK: vote with a disconnected voter did not resolve");
+          const dt=Date.now()-t0; if(dt>=VOTE-200) throw new Error("AFK: vote waited the full clock ("+dt+" ms)");
+          console.log("PASS AFK vote with a disconnected voter resolved in "+dt+" ms (AFK "+AFK+", clock "+VOTE+")"); others.forEach(c=>c.disconnect()); }
+        // 3b. a connected player with a night role who never acts: 3 missed phases → botControlled; takeSeat hands it back
+        { const cs=await room5(); const idle=cs.find(c=>c.role!=="villager")||cs[4]; const others=cs.filter(c=>c!==idle); const idleSeat=idle.seat;
+          // drivers: mafia never targets the idle seat, everybody votes skip → the idle seat survives long enough to miss three phases
+          const drive2=(c)=>{ const r=c.st; if(!r||r.status!=="playing") return; const me=r.players[c.seat]; if(!me||!me.alive) return; const living=r.players.map((p,i)=>p.alive&&!p.left?i:-1).filter(i=>i>=0); if(r.phase==="night"){ if(c.role==="mafia"&&!(r.yourAct&&r.yourAct.kill!=null)){ const t=living.filter(i=>!(r.mafiaSeats||[]).includes(i)&&i!==idleSeat); if(t.length) c.emit("act",{kill:pick(t)}); } else if(c.role==="doctor"&&!(r.yourAct&&r.yourAct.save!=null)) c.emit("act",{save:c.seat}); else if(c.role==="detective"&&!(r.yourAct&&r.yourAct.probe!=null)){ const t=living.filter(i=>i!==c.seat); if(t.length) c.emit("act",{probe:pick(t)}); } } else if(r.phase==="vote"&&!(r.votes&&r.votes[c.seat]!==undefined)) c.emit("vote",{target:-1}); };
+          others.forEach(c=>c.on("state",()=>setTimeout(()=>drive2(c),8)));
+          const flipped=await until(()=>idle.st&&idle.st.players[idleSeat]&&idle.st.players[idleSeat].botControlled, VOTE*10);
+          if(!flipped) throw new Error("AFK: idle seat ("+idle.role+") never became botControlled (status "+(idle.st&&idle.st.status)+")");
+          if(idle.st.players[idleSeat].bot||idle.st.players[idleSeat].name!==idle.nm2) throw new Error("AFK: seat identity changed");
+          if(!(await until(()=>idle.logs.some(l=>new RegExp("playing for "+idle.nm2).test(l)),500))) throw new Error("AFK: no takeover log");
+          idle.emit("takeSeat"); if(!(await until(()=>!idle.st.players[idleSeat].botControlled,1500))) throw new Error("AFK: takeSeat did not clear the flag");
+          console.log("PASS AFK 3 missed phases ("+idle.role+") → bot-controlled seat, takeSeat hands it back");
+          cs.forEach(c=>c.disconnect()); }
+        // 3c. one human + 4 bots, the human disconnects at once: the game must still finish (its seat is auto-played, then bot-controlled)
+        { const hid="hh"+Math.random(); const H=mk2("H"); await sleep(200); let code=null; H.on("joined",j=>{code=j.code;}); H.emit("create",{name:"H",playerId:hid,avatar:"🦊"}); await until(()=>code); for(let i=0;i<4;i++) H.emit("addBot"); await until(()=>H.st&&H.st.players.length===5); H.emit("start"); await until(()=>H.st&&H.st.status==="playing");
+          H.disconnect();
+          await sleep(4000);   // long enough for a whole game at these clocks
+          const R=mk2("R"); await sleep(150); R.emit("join",{code,playerId:hid}); await until(()=>R.st,2000);
+          if(!R.st||R.st.status!=="over") throw new Error("AFK: game with the only human gone did not finish (status "+(R.st&&R.st.status)+", phase "+(R.st&&R.st.phase)+")");
+          console.log("PASS AFK game finished with the absent human's seat auto-played — winner "+R.st.winner); R.disconnect(); }
+      } finally { srv.kill(); }
+    }
     console.log("ALL MAFIA TESTS PASS");
     process.exit(0);
   }catch(e){ console.error("FAIL:", e.message); process.exit(1); }
