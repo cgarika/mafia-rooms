@@ -67,8 +67,56 @@ async function playToEnd(cs, cap){
   return false;
 }
 
+function t10Unit(){
+  const { botDecide, botChatter, BOT_LINES } = require("../server.js");
+  const mkRoom = (roles, extra) => ({ code:"T10", status:"playing", phase:"night", day:1, nightActs:{}, votes:{}, probeLog:{}, lastTally:{}, chat:[], deaths:[],
+    players: roles.map((role,i)=>({ id:"p"+i, name:"P"+i, avatar:"x", bot:true, alive:true, left:false, role, chatN:0, accuseN:0, selfSaves:0, chatDay:-1 })), ...extra });
+  // night target identical across mafia bots, never a mafia, and it is the most active / accusatory villager
+  { const r = mkRoom(["mafia","mafia","mafia","villager","villager","doctor","detective","villager","villager","villager"]);
+    r.players[4].chatN = 2; r.players[7].chatN = 1; r.players[7].accuseN = 2;   // seat 7 scores 1+4=5, seat 4 scores 2
+    for (const i of [0,1,2]) botDecide(r, r.players[i]);
+    const kills = [0,1,2].map(i=>r.nightActs[i].kill);
+    if (new Set(kills).size!==1) throw new Error("T10: mafia bots disagree: "+kills);
+    if (kills[0]!==7) throw new Error("T10: expected the most accusatory villager (7), got "+kills[0]);
+    // a human mafia who already picked wins: bots agree with them
+    const r2 = mkRoom(["mafia","mafia","villager","villager","villager","doctor","detective"]); r2.nightActs[0]={kill:3}; botDecide(r2, r2.players[1]); if (r2.nightActs[1].kill!==3) throw new Error("T10: bot did not follow the human mafia's pick");
+    console.log("PASS T10 mafia bots agree on one night target (most active/accusatory villager, never mafia)"); }
+  // doctor saves the most accused, may save itself once
+  { const r = mkRoom(["mafia","villager","villager","villager","doctor","villager","detective"], { lastTally:{ 3:3, 5:1 } });
+    botDecide(r, r.players[4]); if (r.nightActs[4].save!==3) throw new Error("T10: doctor should save the most accused (3), got "+r.nightActs[4].save);
+    const r2 = mkRoom(["mafia","villager","villager","villager","doctor","villager","detective"], { lastTally:{ 4:3, 5:2 } });
+    botDecide(r2, r2.players[4]); if (r2.nightActs[4].save!==4) throw new Error("T10: doctor may self-save once, got "+r2.nightActs[4].save);
+    r2.nightActs={}; r2.day=2; botDecide(r2, r2.players[4]); if (r2.nightActs[4].save!==5) throw new Error("T10: second self-save should be refused → next most accused (5), got "+r2.nightActs[4].save);
+    console.log("PASS T10 doctor saves the most accused, self only once"); }
+  // detective votes a confirmed mafia, otherwise follows the crowd; probes unprobed players
+  { const r = mkRoom(["mafia","mafia","villager","villager","doctor","villager","detective"], { phase:"vote", probeLog:{ 6:[{t:1,mafia:true},{t:2,mafia:false}] } });
+    botDecide(r, r.players[6]); if (r.votes[6]!==1) throw new Error("T10: detective should vote the known mafia (1), got "+r.votes[6]);
+    const r2 = mkRoom(["mafia","mafia","villager","villager","doctor","villager","detective"], { phase:"vote", votes:{ 2:5, 3:5, 4:0 }, probeLog:{ 6:[{t:2,mafia:false}] } });
+    botDecide(r2, r2.players[6]); if (r2.votes[6]!==5) throw new Error("T10: detective should follow the crowd (5), got "+r2.votes[6]);
+    const r3 = mkRoom(["mafia","mafia","villager","villager","doctor","villager","detective"], { probeLog:{ 6:[{t:0,mafia:true},{t:2,mafia:false},{t:3,mafia:false},{t:4,mafia:false}] } });
+    botDecide(r3, r3.players[6]); if (![1,5].includes(r3.nightActs[6].probe)) throw new Error("T10: detective should probe someone new, got "+r3.nightActs[6].probe);
+    console.log("PASS T10 detective votes known mafia, follows the crowd otherwise, probes new players"); }
+  // villagers follow the plurality with rising probability (day 1 ≈ 0.3, day 4+ ≈ 0.9)
+  { const rate = (day) => { let n=0; for (let k=0;k<400;k++){ const r = mkRoom(["mafia","mafia","villager","villager","doctor","villager","detective","villager","villager"], { phase:"vote", day, votes:{ 2:7, 3:7, 4:5 } }); botDecide(r, r.players[8]); if (r.votes[8]===7) n++; } return n/400; };
+    const d1 = rate(1), d4 = rate(4);
+    if (!(d1 > 0.2 && d1 < 0.55)) throw new Error("T10: day-1 follow rate off: "+d1);
+    if (!(d4 > 0.8 && d4 <= 1)) throw new Error("T10: day-4 follow rate off: "+d4);
+    console.log("PASS T10 villager bots follow the crowd more each day (day1 "+d1.toFixed(2)+", day4 "+d4.toFixed(2)+")"); }
+  // mafia bots sometimes vote a mate in the first two days, never after
+  { let early=0, late=0; for (let k=0;k<300;k++){ const r = mkRoom(["mafia","mafia","villager","villager","doctor","villager","detective"], { phase:"vote", day:1 }); botDecide(r, r.players[0]); if (r.votes[0]===1) early++; const r2 = mkRoom(["mafia","mafia","villager","villager","doctor","villager","detective"], { phase:"vote", day:3 }); botDecide(r2, r2.players[0]); if (r2.votes[0]===1) late++; }
+    if (early < 30) throw new Error("T10: mafia never voted a mate on day 1 ("+early+"/300)"); if (late !== 0) throw new Error("T10: mafia voted a mate on day 3");
+    console.log("PASS T10 mafia bots occasionally vote a fellow mafia early ("+early+"/300), never later"); }
+  // canned chat: one line per bot per day in the day channel
+  { const r = mkRoom(["mafia","villager","villager","doctor","detective"], { phase:"day" }); for (let k=0;k<40;k++) botChatter(r);
+    const by = {}; for (const m of r.chat) { by[m.s]=(by[m.s]||0)+1; if (m.ch!=="day") throw new Error("T10: bot chat must be in the day channel"); }
+    if (Object.keys(by).length!==5 || Object.values(by).some(n=>n!==1)) throw new Error("T10: expected exactly one line per bot, got "+JSON.stringify(by));
+    for (const role of ["villager","mafia","doctor","detective"]) if (!(BOT_LINES[role].length>=8 && BOT_LINES[role].length<=10)) throw new Error("T10: "+role+" needs 8–10 lines");
+    console.log("PASS T10 bots say one canned line per day, 8–10 lines per role"); }
+}
+
 (async()=>{
   try{
+    t10Unit();
     // ---- Test 1: seven humans, secrecy + correctness ----
     const cs=[]; for (let i=0;i<7;i++) cs.push(mk("P"+i));
     await sleep(300);

@@ -76,6 +76,9 @@ function startGame(room) {
   room.probeLog = {};     // detectiveSeat -> [{t, mafia}]
   room.deaths = [];       // seats revealed (dead)
   room.chat = [];
+  room.lastTally = {};    // T10: votes received on the last day (doctor's guide)
+  room.mafiaPlan = null;
+  room.players.forEach((p) => { p.chatN = 0; p.accuseN = 0; p.selfSaves = 0; p.chatDay = -1; });
   room.log = "Roles are dealt. Check yours — and keep it to yourself.";
   room.status = "playing";
   setPhase(room, "reveal", T.reveal);
@@ -111,24 +114,100 @@ function refreshAfkClock(room) {
   clearT(timers, room.code);
   timers.set(room.code, setTimeout(() => onPhaseTimeout(room.code), AFK_MS));
 }
-/* The bot heuristic for one player (used for real bots, bot-controlled seats and auto-played timeouts). */
+/* T10: bots that play properly. All state used here is internal (chatN / accuseN per player, lastTally per day). */
+const BOT_LINES = {
+  villager: ["Quiet night. Too quiet.", "Who was last to vote yesterday?", "I'm just a villager, promise.", "Someone's lying and it isn't me.", "Let's not rush this.", "Anyone else notice who went silent?", "I trust nobody right now.", "Follow the votes, they don't lie.", "If I'm wrong, vote me out tomorrow.", "Think. Who benefits?"],
+  mafia: ["I was asleep, honest.", "We should vote together or we lose.", "Whoever's quiet is suspicious.", "Not me. Look elsewhere.", "I'll go with the majority.", "This is getting tense.", "Someone is steering this. Who?", "Let's stop guessing and vote.", "I've got a feeling about someone.", "Doctor, if you're out there, nice work."],
+  doctor: ["Rough night for somebody.", "I'm keeping an eye on the quiet ones.", "Don't waste the vote today.", "We need to be careful here.", "Who's pushing hardest? That's a tell.", "I'll follow the evidence.", "Stay calm, count the votes.", "Let's hear from everyone first.", "Nobody skip, please.", "One wrong vote and it's over."],
+  detective: ["I've been paying attention.", "Some of you are too eager.", "Let me think this through.", "Patterns matter. Watch the votes.", "I'm not saying anything yet.", "Trust me on this one.", "Whoever flips first is worth a look.", "Hold your vote a second.", "The numbers don't add up.", "I might know something."],
+};
+const rnd = (arr) => arr[crypto.randomInt(arr.length)];
+/* highest-scoring seats (ties kept) */
+function topSeats(scoreOf, seats) {
+  let best = -Infinity, top = [];
+  for (const t of seats) { const v = scoreOf(t); if (v > best) { best = v; top = [t]; } else if (v === best) top.push(t); }
+  return { best, top };
+}
+/* the seat the town is leaning towards right now (votes cast so far this vote phase), or null */
+function crowdPick(room, exclude) {
+  const tally = {};
+  for (const [s, t] of Object.entries(room.votes || {})) { const v = room.players[Number(s)]; if (v && v.alive && !v.left && t >= 0 && t !== exclude) tally[t] = (tally[t] || 0) + 1; }
+  const seats = Object.keys(tally).map(Number);
+  if (!seats.length) return null;
+  return rnd(topSeats((t) => tally[t], seats).top);
+}
+/* one night target for the whole mafia: an agreed pick if any mafia already chose, else the most active / most
+   accusatory living non-mafia (ties broken once per night so every mafia bot lands on the same seat) */
+function mafiaNightTarget(room, livingSeats) {
+  for (const m of mafiaAlive(room)) { const a = room.nightActs[seatOf(room, m)]; if (a && a.kill != null && room.players[a.kill] && room.players[a.kill].alive) return a.kill; }
+  if (room.mafiaPlan && room.mafiaPlan.day === room.day && room.players[room.mafiaPlan.target] && room.players[room.mafiaPlan.target].alive) return room.mafiaPlan.target;
+  const targets = livingSeats.filter((t) => room.players[t].role !== "mafia");
+  if (!targets.length) return null;
+  const score = (t) => (room.players[t].chatN || 0) + 2 * (room.players[t].accuseN || 0);
+  const target = rnd(topSeats(score, targets).top);
+  room.mafiaPlan = { day: room.day, target };
+  return target;
+}
 function botDecide(room, p) {
   const s = seatOf(room, p);
   const livingSeats = room.players.map((q, i) => (q.alive && !q.left ? i : -1)).filter((i) => i >= 0);
-  const pick = (arr) => arr[crypto.randomInt(arr.length)];
   if (room.phase === "night" && p.role !== "villager" && !room.nightActs[s]) {
-    if (p.role === "mafia") { const targets = livingSeats.filter((t) => room.players[t].role !== "mafia"); if (targets.length) room.nightActs[s] = { kill: pick(targets) }; }
-    else if (p.role === "doctor") room.nightActs[s] = { save: pick(livingSeats) };
-    else if (p.role === "detective") { const targets = livingSeats.filter((t) => t !== s); room.nightActs[s] = { probe: targets.length ? pick(targets) : s }; }
+    if (p.role === "mafia") { const t = mafiaNightTarget(room, livingSeats); if (t != null) room.nightActs[s] = { kill: t }; }
+    else if (p.role === "doctor") {
+      const tally = room.lastTally || {};
+      const accused = livingSeats.filter((t) => tally[t] > 0);
+      let save = null;
+      if (accused.length) {
+        const ranked = accused.slice().sort((a, b) => tally[b] - tally[a] || a - b);
+        for (const t of ranked) { if (t === s) { if ((p.selfSaves || 0) < 1) { p.selfSaves = (p.selfSaves || 0) + 1; save = t; break; } continue; } save = t; break; }
+      }
+      if (save == null) { const others = livingSeats.filter((t) => t !== s); save = others.length ? rnd(others) : s; }
+      room.nightActs[s] = { save };
+    }
+    else if (p.role === "detective") {
+      const known = new Set((room.probeLog[s] || []).map((e) => e.t));
+      const fresh = livingSeats.filter((t) => t !== s && !known.has(t));
+      const targets = fresh.length ? fresh : livingSeats.filter((t) => t !== s);
+      room.nightActs[s] = { probe: targets.length ? rnd(targets) : s };
+    }
     return true;
   }
   if (room.phase === "vote" && room.votes[s] === undefined) {
     let targets = livingSeats.filter((t) => t !== s);
     if (p.role === "mafia") targets = targets.filter((t) => room.players[t].role !== "mafia");
-    room.votes[s] = targets.length && crypto.randomInt(4) > 0 ? pick(targets) : -1;
+    const P_FOLLOW = [30, 50, 70, 90][Math.min(Math.max((room.day || 1) - 1, 0), 3)];
+    let vote;
+    if (p.role === "detective") {
+      const caught = (room.probeLog[s] || []).filter((e) => e.mafia && room.players[e.t] && room.players[e.t].alive).map((e) => e.t);
+      if (caught.length) vote = caught[0];
+    }
+    if (vote === undefined && p.role === "mafia" && (room.day || 1) <= 2 && crypto.randomInt(4) === 0) {   // now and then a mafia votes a mate, so "never votes each other" is no tell
+      const mates = livingSeats.filter((t) => t !== s && room.players[t].role === "mafia");
+      if (mates.length) vote = rnd(mates);
+    }
+    if (vote === undefined) {
+      const crowd = crowdPick(room, s);
+      if (crowd != null && targets.includes(crowd) && (p.role === "detective" || crypto.randomInt(100) < P_FOLLOW)) vote = crowd;
+    }
+    if (vote === undefined) vote = targets.length && crypto.randomInt(4) > 0 ? rnd(targets) : -1;
+    room.votes[s] = vote;
     return true;
   }
   return false;
+}
+/* a real bot says one canned line per day, at a random moment of the day phase */
+function botChatter(room) {
+  if (room.phase !== "day") return false;
+  let said = false;
+  for (const p of room.players) {
+    if (!p.bot || !p.alive || p.left || p.chatDay === room.day) continue;
+    if (crypto.randomInt(3) !== 0) continue;
+    p.chatDay = room.day;
+    room.chat.push({ n: p.name, a: p.avatar, t: rnd(BOT_LINES[p.role] || BOT_LINES.villager), ch: "day", s: seatOf(room, p) });
+    if (room.chat.length > 200) room.chat.splice(0, room.chat.length - 200);
+    said = true;
+  }
+  return said;
 }
 /* The human acts (or reconnects): take the seat back from the bot and reset the timeout streak. */
 function humanIsBack(room, p, reason) {
@@ -202,8 +281,9 @@ function resolveVote(room) {
     const voter = room.players[Number(s)];
     if (!voter || !voter.alive || voter.left) continue;
     cast++;
-    if (t >= 0) tally[t] = (tally[t] || 0) + 1;
+    if (t >= 0) { tally[t] = (tally[t] || 0) + 1; voter.accuseN = (voter.accuseN || 0) + 1; }
   }
+  room.lastTally = tally;
   let best = 0; const top = [];
   for (const [s, c] of Object.entries(tally)) {
     if (c > best) { best = c; top.length = 0; top.push(Number(s)); }
@@ -369,6 +449,7 @@ function botsAct(code) {
     if (!(p.bot || p.botControlled) || !p.alive || p.left) continue;
     if (botDecide(room, p)) acted = true;
   }
+  if (botChatter(room)) acted = true;
   if (room.phase === "night" && nightDone(room)) { resolveNight(room); bump(room); return; }
   if (room.phase === "vote" && alive(room).every((p) => room.votes[seatOf(room, p)] !== undefined)) { resolveVote(room); bump(room); return; }
   if (acted) bump(room);
@@ -522,6 +603,7 @@ io.on("connection", (socket) => {
       if (me.role !== "mafia") return;
       ch = "maf";
     }
+    if (ch === "day") me.chatN = (me.chatN || 0) + 1;
     room.chat.push({ n: me.name, a: me.avatar, t, ch, s: seat }); for (const q of room.players) if (q !== me && (ch !== "maf" || q.role === "mafia")) pushTo(q, me.name + ": " + t, { code: room.code, game: PUSH_TITLE }, room.code + "-chat");
     if (room.chat.length > 200) room.chat.splice(0, room.chat.length - 200);
     bump(room);
@@ -610,4 +692,5 @@ setInterval(() => {
   for (const [code, room] of rooms) if (now - room.touched > 2 * 60 * 60 * 1000) deleteRoom(code);
 }, 10 * 60 * 1000);
 
-server.listen(PORT, () => console.log("Mafia Rooms running on port " + PORT));
+if (require.main === module) server.listen(PORT, () => console.log("Mafia Rooms running on port " + PORT));
+module.exports = { botDecide, botChatter, BOT_LINES };
