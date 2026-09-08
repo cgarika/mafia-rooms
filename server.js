@@ -45,12 +45,20 @@ function deleteRoom(code) { clearT(timers, code); clearT(botTimers, code); rooms
 function alive(room) { return room.players.filter((p) => !p.left && p.alive); }
 function mafiaAlive(room) { return alive(room).filter((p) => p.role === "mafia"); }
 
+/* T16: 1 Shadow at 5–7, 2 at 8–10, 3 at 11–12; optional Jester and Mayor when the host turns them on */
+const NIGHT_ROLES = ["mafia", "doctor", "detective"];
+function mafiaCountFor(n) { return n >= 11 ? 3 : n >= 8 ? 2 : 1; }
+function rolesFor(n, opts) {
+  const roles = ["detective", "doctor"];
+  for (let i = 0; i < mafiaCountFor(n); i++) roles.push("mafia");
+  if (opts && opts.jester && roles.length < n) roles.push("jester");
+  if (opts && opts.mayor && roles.length < n) roles.push("mayor");
+  while (roles.length < n) roles.push("villager");
+  return roles;
+}
 function dealRoles(room) {
   const n = room.players.length;
-  const nMafia = n >= 10 ? 3 : n >= 7 ? 2 : 1;
-  const roles = ["detective", "doctor"];
-  for (let i = 0; i < nMafia; i++) roles.push("mafia");
-  while (roles.length < n) roles.push("villager");
+  const roles = rolesFor(n, room.roles);
   // Fisher-Yates with CSPRNG
   for (let i = roles.length - 1; i > 0; i--) {
     const j = crypto.randomInt(i + 1);
@@ -92,14 +100,14 @@ function beginNight(room) {
 }
 
 function nightDone(room) {
-  const need = alive(room).filter((p) => p.role !== "villager");
+  const need = alive(room).filter((p) => NIGHT_ROLES.includes(p.role));
   return need.every((p) => room.nightActs[seatOf(room, p)] != null);
 }
 function seatOf(room, p) { return room.players.indexOf(p); }
 
 /* T1 AFK policy helpers. "Pending" = alive humans who still owe an action in this phase. */
 function pendingActors(room) {
-  if (room.phase === "night") return alive(room).filter((p) => p.role !== "villager" && !p.bot && !p.botControlled && room.nightActs[seatOf(room, p)] == null);
+  if (room.phase === "night") return alive(room).filter((p) => NIGHT_ROLES.includes(p.role) && !p.bot && !p.botControlled && room.nightActs[seatOf(room, p)] == null);
   if (room.phase === "vote") return alive(room).filter((p) => !p.bot && !p.botControlled && room.votes[seatOf(room, p)] === undefined);
   return [];
 }
@@ -151,7 +159,7 @@ function mafiaNightTarget(room, livingSeats) {
 function botDecide(room, p) {
   const s = seatOf(room, p);
   const livingSeats = room.players.map((q, i) => (q.alive && !q.left ? i : -1)).filter((i) => i >= 0);
-  if (room.phase === "night" && p.role !== "villager" && !room.nightActs[s]) {
+  if (room.phase === "night" && NIGHT_ROLES.includes(p.role) && !room.nightActs[s]) {
     if (p.role === "mafia") { const t = mafiaNightTarget(room, livingSeats); if (t != null) room.nightActs[s] = { kill: t }; }
     else if (p.role === "doctor") {
       const tally = room.lastTally || {};
@@ -281,7 +289,7 @@ function resolveVote(room) {
     const voter = room.players[Number(s)];
     if (!voter || !voter.alive || voter.left) continue;
     cast++;
-    if (t >= 0) { tally[t] = (tally[t] || 0) + 1; voter.accuseN = (voter.accuseN || 0) + 1; }
+    if (t >= 0) { tally[t] = (tally[t] || 0) + (voter.role === "mayor" ? 2 : 1); voter.accuseN = (voter.accuseN || 0) + 1; }   // T16: the Mayor's vote counts double
   }
   room.lastTally = tally;
   let best = 0; const top = [];
@@ -297,6 +305,13 @@ function resolveVote(room) {
     out.alive = false;
     room.deaths.push(top[0]);
     room.log = `The town has spoken. ${out.name} is out — they were ${label(out.role)}.`;
+    if (out.role === "jester") {   // T16: the Jester wanted exactly this
+      room.winner = "jester";
+      room.status = "over"; room.phase = "over"; room.phaseEndsAt = null;
+      clearT(timers, room.code); clearT(botTimers, room.code);
+      room.log = `The town has spoken. ${out.name} is out — they were the Jester, and that is exactly what they wanted. The Jester wins alone! All roles are revealed.`;
+      return;
+    }
   } else {
     room.log = "No agreement. Nobody is voted out.";
   }
@@ -305,7 +320,7 @@ function resolveVote(room) {
 }
 
 function label(role) {
-  return role === "mafia" ? "a SHADOW" : role === "detective" ? "the Detective" : role === "doctor" ? "the Doctor" : "a Villager";
+  return role === "mafia" ? "a SHADOW" : role === "detective" ? "the Detective" : role === "doctor" ? "the Doctor" : role === "jester" ? "the Jester" : role === "mayor" ? "the Mayor" : "a Villager";
 }
 
 function checkWin(room) {
@@ -361,6 +376,7 @@ function stateFor(room, seat) {
     phaseEndsAt: room.phaseEndsAt, log: room.log, winner: room.winner,
     hostSeat: room.players.findIndex((p) => p.id === room.host),
     minPlayers: MIN_PLAYERS, maxPlayers: MAX_PLAYERS, voteRule: room.voteRule === "plurality" ? "plurality" : "majority",
+    roles: { jester: !!(room.roles && room.roles.jester), mayor: !!(room.roles && room.roles.mayor) }, mafiaCount: mafiaCountFor(room.players.length),
     players: room.players.map((p, s) => ({
       name: p.name, avatar: p.avatar, bot: !!p.bot, botControlled: !!p.botControlled, left: p.left,
       connected: p.connected, alive: p.alive !== false,
@@ -518,12 +534,19 @@ io.on("connection", (socket) => {
     bump(room);
   });
 
-  socket.on("settings", ({ voteRule } = {}) => {   // T2: host picks how the town votes (lobby only)
+  socket.on("settings", ({ voteRule, jester, mayor } = {}) => {   // T2: vote rule; T16: optional roles (host, lobby only)
     const room = currentRoom();
     if (!room || room.status !== "lobby" || room.host !== socket.data.playerId) return;
-    if (voteRule !== "majority" && voteRule !== "plurality") return;
-    room.voteRule = voteRule;
-    room.log = voteRule === "majority" ? "Vote rule: a true majority of the living is needed to eliminate." : "Vote rule: the most votes wins; ties spare everyone.";
+    if (voteRule === "majority" || voteRule === "plurality") {
+      room.voteRule = voteRule;
+      room.log = voteRule === "majority" ? "Vote rule: a true majority of the living is needed to eliminate." : "Vote rule: the most votes wins; ties spare everyone.";
+    }
+    if (typeof jester === "boolean" || typeof mayor === "boolean") {
+      room.roles = room.roles || {};
+      if (typeof jester === "boolean") room.roles.jester = jester;
+      if (typeof mayor === "boolean") room.roles.mayor = mayor;
+      room.log = `Optional roles: ${[room.roles.jester && "Jester", room.roles.mayor && "Mayor"].filter(Boolean).join(" + ") || "none"}.`;
+    }
     bump(room);
   });
 
@@ -693,4 +716,4 @@ setInterval(() => {
 }, 10 * 60 * 1000);
 
 if (require.main === module) server.listen(PORT, () => console.log("Mafia Rooms running on port " + PORT));
-module.exports = { botDecide, botChatter, BOT_LINES };
+module.exports = { botDecide, botChatter, BOT_LINES, rolesFor, mafiaCountFor, resolveVote, dealRoles, label };

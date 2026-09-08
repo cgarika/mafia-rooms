@@ -114,9 +114,35 @@ function t10Unit(){
     console.log("PASS T10 bots say one canned line per day, 8–10 lines per role"); }
 }
 
+function t16Unit(){
+  const { rolesFor, mafiaCountFor, resolveVote, dealRoles, label } = require("../server.js");
+  const count=(arr,r)=>arr.filter(x=>x===r).length;
+  for (const [n,m] of [[5,1],[6,1],[7,1],[8,2],[9,2],[10,2],[11,3],[12,3]]) {
+    if (mafiaCountFor(n)!==m) throw new Error("T16: "+n+" players should have "+m+" mafia");
+    const r = rolesFor(n, {}); if (r.length!==n||count(r,"mafia")!==m||count(r,"detective")!==1||count(r,"doctor")!==1||count(r,"jester")||count(r,"mayor")) throw new Error("T16: base roles wrong at "+n+": "+r);
+    const r2 = rolesFor(n, {jester:true, mayor:true}); if (r2.length!==n||count(r2,"jester")!==1||count(r2,"mayor")!==1||count(r2,"mafia")!==m) throw new Error("T16: optional roles wrong at "+n+": "+r2);
+  }
+  { const room = { players: Array.from({length:8},(_,i)=>({name:"P"+i})), roles:{jester:true} }; dealRoles(room); const rs=room.players.map(p=>p.role); if (count(rs,"jester")!==1||count(rs,"mafia")!==2||count(rs,"mayor")) throw new Error("T16: dealRoles ignored the room's optional roles: "+rs); }
+  console.log("PASS T16 role counts scale with table size (1 / 2 / 3 Shadows at 5–7 / 8–10 / 11–12), Jester and Mayor dealt when enabled");
+  const mkRoom=(roles)=>({ code:"T16", status:"playing", phase:"vote", day:1, votes:{}, deaths:[], nightActs:{}, probeLog:{}, chat:[], lastTally:{}, players: roles.map((role,i)=>({ id:"p"+i, name:"P"+i, avatar:"x", alive:true, left:false, role })) });
+  // Jester voted out → Jester wins alone
+  { const r = mkRoom(["mafia","villager","villager","jester","doctor","detective"]); r.votes={0:3,1:3,2:3,4:3,5:3,3:-1}; resolveVote(r);
+    if (r.winner!=="jester"||r.status!=="over"||r.players[3].alive) throw new Error("T16: jester vote-out should end the game with a jester win ("+r.winner+"/"+r.status+")");
+    if (!/Jester wins/.test(r.log)) throw new Error("T16: jester log missing"); }
+  // Jester killed at night is just a death (no jester win)
+  { const r = mkRoom(["mafia","villager","villager","jester","doctor","detective"]); r.votes={0:1,1:-1,2:-1,3:-1,4:-1,5:-1}; resolveVote(r); if (r.winner==="jester") throw new Error("T16: jester must not win without being voted out"); }
+  // Mayor's vote counts double: 5 alive, majority needs 3 — mayor + one villager on X eliminates; two villagers alone do not
+  { const r = mkRoom(["mafia","mayor","villager","villager","doctor"]); r.votes={1:0,2:0,3:-1,4:-1,0:-1}; resolveVote(r); if (r.players[0].alive) throw new Error("T16: mayor + 1 vote (weight 3 of 5) should eliminate"); }
+  { const r = mkRoom(["mafia","villager","villager","villager","doctor"]); r.votes={1:0,2:0,3:-1,4:-1,0:-1}; resolveVote(r); if (!r.players[0].alive) throw new Error("T16: two plain votes of five must not eliminate"); }
+  // reveal-on-death text keeps the role name
+  { const r = mkRoom(["mafia","mayor","villager","villager","doctor","villager"]); r.votes={0:1,2:1,3:1,4:1,5:1,1:-1}; resolveVote(r); if (r.players[1].alive || !r.deaths.includes(1)) throw new Error("T16: mayor should be voted out and revealed"); if (label("mayor")!=="the Mayor" || label("jester")!=="the Jester") throw new Error("T16: reveal labels missing"); }
+  console.log("PASS T16 Jester wins when voted out (not when killed), Mayor's vote counts double, reveal text names the role");
+}
+
 (async()=>{
   try{
     t10Unit();
+    t16Unit();
     // ---- Test 1: seven humans, secrecy + correctness ----
     const cs=[]; for (let i=0;i<7;i++) cs.push(mk("P"+i));
     await sleep(300);
@@ -128,7 +154,7 @@ function t10Unit(){
     for (let k=0;k<120 && cs.some(c=>!c.role);k++) await sleep(25);   // roles arrive with the first playing state; poll instead of a fixed wait
     const roles = {}; cs.forEach(c=>roles[c.seat]=c.role);
     const mafiaCount = Object.values(roles).filter(r=>r==="mafia").length;
-    if (mafiaCount!==2) throw new Error("7 players should deal 2 mafia, got "+mafiaCount);
+    if (mafiaCount!==1) throw new Error("7 players should deal 1 mafia (T16), got "+mafiaCount);
     if (Object.values(roles).filter(r=>r==="detective").length!==1) throw new Error("need exactly 1 detective");
     if (Object.values(roles).filter(r=>r==="doctor").length!==1) throw new Error("need exactly 1 doctor");
     if (!await playToEnd(cs, 12000)) throw new Error("7p game didn't finish");

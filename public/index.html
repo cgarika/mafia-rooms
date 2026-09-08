@@ -225,6 +225,7 @@
     <div class="setnote" id="botnote"></div>
     <div class="label mt12">Roles tonight</div>
     <div class="setnote" id="rolenote"></div>
+    <div class="tokrow" id="rolerow"></div>
     <div class="tokrow" id="voterow"></div>
     <div class="setnote" id="votenote"></div>
     <button class="btn purple mt18" id="startBtn">Start the game</button>
@@ -363,6 +364,8 @@ const ROLES = {
   detective:{ e:"🕵️", t:"Detective", d:"Each night, investigate one player. At dawn you'll learn if they're a Shadow. Use it — carefully." },
   doctor:{ e:"🩺", t:"Doctor", d:"Each night, choose someone to protect (even yourself). If the Shadows strike them, you save a life." },
   villager:{ e:"🧑‍🌾", t:"Villager", d:"No powers — just your wits. Watch, argue, and vote the liars out." },
+  jester:{ e:"🃏", t:"Jester", d:"You win alone if the town votes you out. Act shady — but not so shady the Shadows take you at night." },
+  mayor:{ e:"🎖️", t:"Mayor", d:"Your vote counts double. Nobody knows until you die — then the town learns who they lost." },
 };
 
 function toast(t){ const el=$("toast"); el.textContent=t; el.classList.add("show"); clearTimeout(el._t); el._t=setTimeout(()=>el.classList.remove("show"),2600); }
@@ -386,6 +389,7 @@ window.addEventListener("load",()=>{
 
 /* lobby */
 $("voterow").addEventListener("click",(e)=>{ const b=e.target.closest("[data-rule]"); if(b) socket.emit("settings",{voteRule:b.dataset.rule}); });
+$("rolerow").addEventListener("click",(e)=>{ const b=e.target.closest("[data-role]"); if(!b||!S.room) return; const k=b.dataset.role; socket.emit("settings",{ [k]: !(S.room.roles&&S.room.roles[k]) }); });
 $("botrow").addEventListener("click",(e)=>{
   if (e.target.closest("#addBotBtn")) socket.emit("addBot");
   else if (e.target.closest("#delBotBtn")) socket.emit("removeBot");
@@ -408,13 +412,17 @@ function renderLobby(r){
     ? `<button class="tokbtn" id="addBotBtn">🤖 Add a bot</button>` + (r.players.some(p=>p.bot)?`<button class="tokbtn" id="delBotBtn">Remove bot</button>`:"")
     : "";
   $("botnote").textContent = isHost ? "Bots fill seats and play their roles — handy for testing or a short table." : "The host manages bots.";
-  const n = r.players.length, nm = n>=10?3:n>=7?2:1;
+  const n = r.players.length, nm = r.mafiaCount || (n>=11?3:n>=8?2:1);
+  const ro = r.roles||{};
+  $("rolerow").innerHTML = isHost
+    ? `<button class="tokbtn${ro.jester?" on":""}" data-role="jester">🃏 Jester</button><button class="tokbtn${ro.mayor?" on":""}" data-role="mayor">🎖️ Mayor</button>`
+    : `<span class="setnote">Optional roles: ${[ro.jester&&"Jester",ro.mayor&&"Mayor"].filter(Boolean).join(" + ")||"none"}</span>`;
   $("voterow").innerHTML = isHost
     ? `<button class="tokbtn${r.voteRule!=="plurality"?" on":""}" data-rule="majority">🗳 Majority</button><button class="tokbtn${r.voteRule==="plurality"?" on":""}" data-rule="plurality">⚡ Most votes</button>`
     : `<span class="setnote">Vote rule: ${r.voteRule==="plurality"?"most votes wins":"true majority"}</span>`;
   $("votenote").textContent = r.voteRule==="plurality" ? "Most votes wins the day. A tie spares everyone." : "Someone is out only when more than half of the living agree. Ties spare everyone.";
   $("rolenote").textContent = n>=r.minPlayers
-    ? `${nm} ${nm===1?"Shadow":"Shadows"} · 1 Detective · 1 Doctor · ${Math.max(0,n-nm-2)} Villagers — dealt secretly at start.`
+    ? `${nm} ${nm===1?"Shadow":"Shadows"} · 1 Detective · 1 Doctor${ro.jester?" · 1 Jester":""}${ro.mayor?" · 1 Mayor":""} · ${Math.max(0,n-nm-2-(ro.jester?1:0)-(ro.mayor?1:0))} Villagers — dealt secretly at start.`
     : "Roles appear when there are enough players.";
   $("startBtn").classList.toggle("hidden", !isHost);
   $("startBtn").disabled = r.players.length < r.minPlayers;
@@ -515,9 +523,9 @@ function renderGame(r){
   $("log").classList.toggle("hidden", /^Night \d+\. The town sleeps\.$/.test(r.log || ""));   // the phase card already says it
   $("overbox").classList.toggle("hidden", r.status!=="over");
   if (r.status==="over"){
-    $("overcup").textContent = r.winner==="mafia" ? "🌑" : "🏆";
-    $("winname").textContent = r.winner==="mafia" ? "The Shadows win" : "The village wins";
-    $("winname").style.color = r.winner==="mafia" ? "#ff5757" : "#33d17a";
+    $("overcup").textContent = r.winner==="mafia" ? "🌑" : r.winner==="jester" ? "🃏" : "🏆";
+    $("winname").textContent = r.winner==="mafia" ? "The Shadows win" : r.winner==="jester" ? "The Jester wins alone" : "The village wins";
+    $("winname").style.color = r.winner==="mafia" ? "#ff5757" : r.winner==="jester" ? "#ffc233" : "#33d17a";
     $("rematchBtn").classList.toggle("hidden", S.mySeat !== r.hostSeat);
   }
   $("mafch").classList.toggle("hidden", !(r.phase==="night" && iAmMafia));
