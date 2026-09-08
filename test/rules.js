@@ -163,6 +163,49 @@ async function playToEnd(cs, cap){
           console.log("PASS AFK game finished with the absent human's seat auto-played — winner "+R.st.winner); R.disconnect(); }
       } finally { srv.kill(); }
     }
+    // ---- Test 4 (T2 vote threshold): 5, 8 and 12 humans under each rule, 2 votes on one player, the rest skip ----
+    {
+      const { spawn } = require("child_process");
+      const P=3222, URL2="http://localhost:"+P;
+      const srv = spawn(process.execPath, ["server.js"], { env: { ...process.env, PORT:String(P), REVEAL_MS:"40", NIGHT_MS:"4000", DAY_MS:"60", VOTE_MS:"4000", AFK_MS:"4000", BOT_MS:"5" }, stdio:"ignore" });
+      await sleep(600);
+      const mk2=(name)=>{ const c=io(URL2,{transports:["websocket"],reconnection:false}); c.st=null; c.seat=-1; c.role=null; c.on("state",({room,mySeat})=>{ c.st=room; c.seat=mySeat; if(room.yourRole) c.role=room.yourRole; }); return c; };
+      const wait=async(fn,ms=8000)=>{ const t0=Date.now(); while(Date.now()-t0<ms){ if(fn()) return true; await sleep(15);} return false; };
+      const scenario=async(n, rule, votesFor)=>{
+        const cs=[]; for(let i=0;i<n;i++) cs.push(mk2("V"+i)); await sleep(250); let code=null; cs[0].on("joined",j=>{code=j.code;});
+        cs[0].emit("create",{name:"V0",playerId:"v0"+Math.random(),avatar:"🦊"}); await wait(()=>code); for(let i=1;i<n;i++) cs[i].emit("join",{code,name:"V"+i,playerId:"v"+i+Math.random(),avatar:"🐼"}); await wait(()=>cs[0].st&&cs[0].st.players.length===n);
+        cs[0].emit("settings",{voteRule:rule}); await wait(()=>cs[0].st.voteRule===rule);
+        cs[0].emit("start"); await wait(()=>cs.every(c=>c.role));
+        // night: every role acts on a fixed target so nobody dies of randomness (doctor saves the mafia's target)
+        await wait(()=>cs[0].st.phase==="night");
+        const living=()=>cs[0].st.players.map((p,i)=>p.alive?i:-1).filter(i=>i>=0);
+        const target=cs.find(c=>c.role==="villager").seat;
+        for(const c of cs){ if(c.role==="mafia") c.emit("act",{kill:target}); else if(c.role==="doctor") c.emit("act",{save:target}); else if(c.role==="detective") c.emit("act",{probe:target}); }
+        if(!(await wait(()=>cs[0].st.phase==="vote", 9000))) throw new Error(`T2 ${n}p ${rule}: never reached the vote (phase ${cs[0].st.phase})`);
+        const aliveBefore=living().length;
+        const victim=living().find(i=>i!==cs[0].seat && i!==cs[1].seat);
+        // two votes on the victim, everyone else skips
+        cs.forEach((c)=>{ if(!cs[0].st.players[c.seat].alive) return; c.emit("vote", (c===cs[0]||c===cs[1]) && votesFor===2 ? {target:victim} : (votesFor==="all" && c.seat!==victim ? {target:victim} : {target:-1})); });
+        await wait(()=>cs[0].st.phase!=="vote"||cs[0].st.status==="over", 9000);
+        const out=aliveBefore-living().length; cs.forEach(c=>c.disconnect()); return { out, log: cs[0].st.log };
+      };
+      try {
+        for (const n of [5,8,12]) {
+          const maj=await scenario(n,"majority",2); if(maj.out!==0) throw new Error(`T2 ${n}p majority: 2 votes eliminated someone (${maj.log})`);
+          const plu=await scenario(n,"plurality",2); if(plu.out!==1) throw new Error(`T2 ${n}p plurality: 2 votes did not eliminate (${plu.log})`);
+          const all=await scenario(n,"majority","all"); if(all.out!==1) throw new Error(`T2 ${n}p majority: a real majority did not eliminate (${all.log})`);
+          console.log(`PASS T2 ${n} players — majority: 2 votes spare, ${n-1} votes eliminate; plurality: 2 votes eliminate`);
+        }
+        // ties never eliminate (plurality): 8 players, 2 votes each on two different players
+        { const n=8; const cs=[]; for(let i=0;i<n;i++) cs.push(mk2("T"+i)); await sleep(250); let code=null; cs[0].on("joined",j=>{code=j.code;}); cs[0].emit("create",{name:"T0",playerId:"t0"+Math.random(),avatar:"🦊"}); await wait(()=>code); for(let i=1;i<n;i++) cs[i].emit("join",{code,name:"T"+i,playerId:"t"+i+Math.random(),avatar:"🐼"}); await wait(()=>cs[0].st&&cs[0].st.players.length===n); cs[0].emit("settings",{voteRule:"plurality"}); await wait(()=>cs[0].st.voteRule==="plurality"); cs[0].emit("start"); await wait(()=>cs.every(c=>c.role)); await wait(()=>cs[0].st.phase==="night"); const target=cs.find(c=>c.role==="villager").seat; for(const c of cs){ if(c.role==="mafia") c.emit("act",{kill:target}); else if(c.role==="doctor") c.emit("act",{save:target}); else if(c.role==="detective") c.emit("act",{probe:target}); } await wait(()=>cs[0].st.phase==="vote", 9000);
+          const liv=cs[0].st.players.map((p,i)=>p.alive?i:-1).filter(i=>i>=0); const a=liv[0], b=liv[1]; const before=liv.length;
+          cs.forEach((c,k)=>{ if(!cs[0].st.players[c.seat].alive) return; if(c.seat===a||c.seat===b){ c.emit("vote",{target:-1}); return; } c.emit("vote",{target: k%2===0 ? a : b}); });
+          await wait(()=>cs[0].st.phase!=="vote"||cs[0].st.status==="over", 9000);
+          const after=cs[0].st.players.filter(p=>p.alive).length; if(after!==before) throw new Error("T2 tie eliminated someone: "+cs[0].st.log);
+          console.log("PASS T2 tie under plurality spares everyone"); cs.forEach(c=>c.disconnect()); }
+      } finally { srv.kill(); }
+    }
+
     console.log("ALL MAFIA TESTS PASS");
     process.exit(0);
   }catch(e){ console.error("FAIL:", e.message); process.exit(1); }

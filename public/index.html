@@ -225,6 +225,8 @@
     <div class="setnote" id="botnote"></div>
     <div class="label mt12">Roles tonight</div>
     <div class="setnote" id="rolenote"></div>
+    <div class="tokrow" id="voterow"></div>
+    <div class="setnote" id="votenote"></div>
     <button class="btn purple mt18" id="startBtn">Start the game</button>
     <button class="btn plain small mt10" id="leaveLobbyBtn">Leave</button>
   </div>
@@ -383,6 +385,7 @@ window.addEventListener("load",()=>{
   if (c && n) socket.emit("join",{ code:c, name:n, playerId, avatar:myAvatar }); });
 
 /* lobby */
+$("voterow").addEventListener("click",(e)=>{ const b=e.target.closest("[data-rule]"); if(b) socket.emit("settings",{voteRule:b.dataset.rule}); });
 $("botrow").addEventListener("click",(e)=>{
   if (e.target.closest("#addBotBtn")) socket.emit("addBot");
   else if (e.target.closest("#delBotBtn")) socket.emit("removeBot");
@@ -406,6 +409,10 @@ function renderLobby(r){
     : "";
   $("botnote").textContent = isHost ? "Bots fill seats and play their roles — handy for testing or a short table." : "The host manages bots.";
   const n = r.players.length, nm = n>=10?3:n>=7?2:1;
+  $("voterow").innerHTML = isHost
+    ? `<button class="tokbtn${r.voteRule!=="plurality"?" on":""}" data-rule="majority">🗳 Majority</button><button class="tokbtn${r.voteRule==="plurality"?" on":""}" data-rule="plurality">⚡ Most votes</button>`
+    : `<span class="setnote">Vote rule: ${r.voteRule==="plurality"?"most votes wins":"true majority"}</span>`;
+  $("votenote").textContent = r.voteRule==="plurality" ? "Most votes wins the day. A tie spares everyone." : "Someone is out only when more than half of the living agree. Ties spare everyone.";
   $("rolenote").textContent = n>=r.minPlayers
     ? `${nm} ${nm===1?"Shadow":"Shadows"} · 1 Detective · 1 Doctor · ${Math.max(0,n-nm-2)} Villagers — dealt secretly at start.`
     : "Roles appear when there are enough players.";

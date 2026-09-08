@@ -209,8 +209,10 @@ function resolveVote(room) {
     if (c > best) { best = c; top.length = 0; top.push(Number(s)); }
     else if (c === best) top.push(Number(s));
   }
-  const majorityNeeded = Math.floor(alive(room).length / 2) + 1;
-  if (top.length === 1 && best >= Math.min(2, majorityNeeded)) {
+  // T2: "majority" (default) = more than half of the living players; "plurality" = most votes; ties never eliminate
+  const rule = room.voteRule === "plurality" ? "plurality" : "majority";
+  const needed = rule === "majority" ? Math.floor(alive(room).length / 2) + 1 : 1;
+  if (top.length === 1 && best >= needed) {
     const out = room.players[top[0]];
     out.alive = false;
     room.deaths.push(top[0]);
@@ -278,7 +280,7 @@ function stateFor(room, seat) {
     status: room.status, phase: room.phase, day: room.day,
     phaseEndsAt: room.phaseEndsAt, log: room.log, winner: room.winner,
     hostSeat: room.players.findIndex((p) => p.id === room.host),
-    minPlayers: MIN_PLAYERS, maxPlayers: MAX_PLAYERS,
+    minPlayers: MIN_PLAYERS, maxPlayers: MAX_PLAYERS, voteRule: room.voteRule === "plurality" ? "plurality" : "majority",
     players: room.players.map((p, s) => ({
       name: p.name, avatar: p.avatar, bot: !!p.bot, botControlled: !!p.botControlled, left: p.left,
       connected: p.connected, alive: p.alive !== false,
@@ -375,6 +377,7 @@ function botsAct(code) {
 }
 
 /* ---------- sockets ---------- */
+
 io.on("connection", (socket) => {
   socket.data.playerId = null;
   socket.data.code = null;
@@ -420,6 +423,15 @@ io.on("connection", (socket) => {
     attach(code);
     socket.emit("joined", { code });
     room.log = `${name} joined.`;
+    bump(room);
+  });
+
+  socket.on("settings", ({ voteRule } = {}) => {   // T2: host picks how the town votes (lobby only)
+    const room = currentRoom();
+    if (!room || room.status !== "lobby" || room.host !== socket.data.playerId) return;
+    if (voteRule !== "majority" && voteRule !== "plurality") return;
+    room.voteRule = voteRule;
+    room.log = voteRule === "majority" ? "Vote rule: a true majority of the living is needed to eliminate." : "Vote rule: the most votes wins; ties spare everyone.";
     bump(room);
   });
 
