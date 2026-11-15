@@ -5,13 +5,34 @@
       REVEAL_MS=60 NIGHT_MS=500 DAY_MS=130 VOTE_MS=400 BOT_MS=5 PORT=3211 node server.js
    2) In another shell (needs socket.io-client available):
       node test/rules.js
+    or: TEST_PORTS=3277,3278,3279 TEST_SPAWN_MAIN=1 node test/rules.js   (starts and stops its own copies; npm test)
  Proves: role dealing (2 mafia / 1 detective / 1 doctor at 7p), full games to valid
  winners, revealed roles match ground truth, and SECRECY — living non-mafia never
  receive mafiaSeats, role fields, or mafia-channel chat. Plus 3 bot games w/ rematch.
 */
 const { io } = require("socket.io-client");
-const URL = "http://localhost:3211";
+const net = require("net");
+const { spawn } = require("child_process");
+const path = require("path");
+/* Ports: TEST_PORTS="main,spawned,aux" (e.g. 3277,3278,3279). The spawned servers run one at a time on the
+   second port. Without TEST_PORTS the suite keeps its old ports. */
+const TP = (process.env.TEST_PORTS || "").split(",").map(Number).filter(Boolean);
+const MAIN_PORT = TP[0] || 3211;
+const spawnPort = (dflt) => TP[1] || dflt;
+const AUX_PORT = TP[2] || 3232;
+const URL = "http://localhost:" + MAIN_PORT;
 const sleep = (ms)=>new Promise(r=>setTimeout(r,ms));
+const SERVER_JS = path.join(__dirname, "..", "server.js");
+const portOpen = (port)=>new Promise((res)=>{ const c=net.connect(port,"127.0.0.1"); c.once("connect",()=>{ c.destroy(); res(true); }); c.once("error",()=>res(false)); });
+/* Start a server copy on `port` and wait until it listens; stop() waits for the process to exit, so the port can be reused. */
+async function startServer(port, env){
+  if (await portOpen(port)) throw new Error("port "+port+" is already in use");
+  const srv = spawn(process.execPath, [SERVER_JS], { env: { ...process.env, PORT:String(port), ...env }, stdio:"ignore" });
+  const exited = new Promise((r)=>srv.once("exit", r));
+  for (let k=0; k<100 && !(await portOpen(port)); k++) await sleep(50);
+  srv.stop = async ()=>{ srv.kill(); await Promise.race([exited, sleep(3000)]); };
+  return srv;
+}
 const pick = (a)=>a[Math.floor(Math.random()*a.length)];
 
 function mk(name){
@@ -107,11 +128,11 @@ function t10Unit(){
     if (early < 30) throw new Error("T10: mafia never voted a mate on day 1 ("+early+"/300)"); if (late !== 0) throw new Error("T10: mafia voted a mate on day 3");
     console.log("PASS T10 mafia bots occasionally vote a fellow mafia early ("+early+"/300), never later"); }
   // canned chat: one line per bot per day in the day channel
-  { const r = mkRoom(["mafia","villager","villager","doctor","detective"], { phase:"day" }); for (let k=0;k<40;k++) botChatter(r);
+  { const r = mkRoom(["mafia","villager","villager","doctor","detective"], { phase:"day" }); botChatter(r); r.chatPlan.items.forEach(i=>{ i.at = 0; }); for (let k=0;k<40;k++) botChatter(r);
     const by = {}; for (const m of r.chat) { by[m.s]=(by[m.s]||0)+1; if (m.ch!=="day") throw new Error("T10: bot chat must be in the day channel"); }
-    if (Object.keys(by).length!==5 || Object.values(by).some(n=>n!==1)) throw new Error("T10: expected exactly one line per bot, got "+JSON.stringify(by));
+    if (Object.keys(by).length!==5 || Object.values(by).some(n=>n<2||n>3)) throw new Error("T10: expected 2-3 lines per bot, got "+JSON.stringify(by));
     for (const role of ["villager","mafia","doctor","detective"]) if (!(BOT_LINES[role].length>=8 && BOT_LINES[role].length<=10)) throw new Error("T10: "+role+" needs 8–10 lines");
-    console.log("PASS T10 bots say one canned line per day, 8–10 lines per role"); }
+    console.log("PASS T10 bots say 2-3 lines per day, 8–10 canned lines per role"); }
 }
 
 function t16Unit(){
@@ -140,7 +161,9 @@ function t16Unit(){
 }
 
 (async()=>{
+  let mainSrv=null;
   try{
+    if (process.env.TEST_SPAWN_MAIN) mainSrv = await startServer(MAIN_PORT, { REVEAL_MS:"60", NIGHT_MS:"500", DAY_MS:"130", VOTE_MS:"400", BOT_MS:"5" });
     t10Unit();
     t16Unit();
     // ---- Test 1: seven humans, secrecy + correctness ----
@@ -198,15 +221,13 @@ function t16Unit(){
 
     // ---- Test 3 (T1 AFK policy): own server on 3221 with 2 s night/vote clocks and a 250 ms AFK clock ----
     {
-      const { spawn } = require("child_process");
-      const P=3221, URL2="http://localhost:"+P, VOTE=2000, AFK=250;
-      const srv = spawn(process.execPath, ["server.js"], { env: { ...process.env, PORT:String(P), REVEAL_MS:"40", NIGHT_MS:String(VOTE), DAY_MS:"60", VOTE_MS:String(VOTE), AFK_MS:String(AFK), BOT_MS:"5" }, stdio:"ignore" });
-      await sleep(600);
+      const P=spawnPort(3221), URL2="http://localhost:"+P, VOTE=2000, AFK=250;
+      const srv = await startServer(P, { REVEAL_MS:"40", NIGHT_MS:String(VOTE), DAY_MS:"60", VOTE_MS:String(VOTE), AFK_MS:String(AFK), BOT_MS:"5" });
       const mk2=(name)=>{ const c=io(URL2,{transports:["websocket"],reconnection:false}); c.nm2=name; c.st=null; c.seat=-1; c.role=null; c.logs=[]; c.on("state",({room,mySeat})=>{ c.st=room; c.seat=mySeat; if(room.yourRole) c.role=room.yourRole; if(room&&room.log) c.logs.push(room.log); }); return c; };
       const until=async(fn,ms=6000)=>{ const t0=Date.now(); while(Date.now()-t0<ms){ if(fn()) return true; await sleep(15);} return false; };
       // 5 humans; the auto-driver acts for everyone except the "idle" seat
       const room5=async()=>{ const cs=[]; for(let i=0;i<5;i++) cs.push(mk2("Q"+i)); await sleep(250); let code=null; cs[0].on("joined",j=>{code=j.code;}); cs[0].emit("create",{name:"Q0",playerId:"q0"+Math.random(),avatar:"🦊"}); await until(()=>code); for(let i=1;i<5;i++) cs[i].emit("join",{code,name:"Q"+i,playerId:"q"+i+Math.random(),avatar:"🐼"}); await until(()=>cs[0].st&&cs[0].st.players.length===5); cs[0].emit("start"); await until(()=>cs.every(c=>c.role)); return cs; };
-      const drive=(c)=>{ const r=c.st; if(!r||r.status!=="playing") return; const me=r.players[c.seat]; if(!me||!me.alive) return; const living=r.players.map((p,i)=>p.alive&&!p.left?i:-1).filter(i=>i>=0); if(r.phase==="night"){ if(c.role==="mafia"&&!(r.yourAct&&r.yourAct.kill!=null)){ const t=living.filter(i=>!(r.mafiaSeats||[]).includes(i)); if(t.length) c.emit("act",{kill:pick(t)}); } else if(c.role==="doctor"&&!(r.yourAct&&r.yourAct.save!=null)) c.emit("act",{save:pick(living)}); else if(c.role==="detective"&&!(r.yourAct&&r.yourAct.probe!=null)){ const t=living.filter(i=>i!==c.seat); if(t.length) c.emit("act",{probe:pick(t)}); } } else if(r.phase==="vote"&&!(r.votes&&r.votes[c.seat]!==undefined)){ const t=living.filter(i=>i!==c.seat); c.emit("vote",{target:t.length?pick(t):-1}); } };
+      const drive=(c)=>{ const r=c.st; if(!r||r.status!=="playing") return; const me=r.players[c.seat]; if(!me||!me.alive) return; const living=r.players.map((p,i)=>p.alive&&!p.left?i:-1).filter(i=>i>=0); if(r.phase==="night"){ if(c.role==="mafia"&&!(r.yourAct&&r.yourAct.kill!=null)){ const t=living.filter(i=>!(r.mafiaSeats||[]).includes(i)); if(t.length) c.emit("act",{kill:pick(t)}); } else if(c.role==="doctor"&&!(r.yourAct&&r.yourAct.save!=null)) c.emit("act",{save:pick(living)}); else if(c.role==="detective"&&!(r.yourAct&&r.yourAct.probe!=null)){ const t=living.filter(i=>i!==c.seat); if(t.length) c.emit("act",{probe:pick(t)}); } } else if(r.phase==="vote"&&r.yourVote===undefined){ const t=living.filter(i=>i!==c.seat); c.emit("vote",{target:t.length?pick(t):-1}); } };
       try {
         // 3a. the only pending voter is disconnected → the vote resolves within AFK_MS, not VOTE_MS
         { const cs=await room5(); const idle=cs[4]; const others=cs.slice(0,4); others.forEach(c=>c.on("state",()=>setTimeout(()=>drive(c),8)));
@@ -219,7 +240,7 @@ function t16Unit(){
         // 3b. a connected player with a night role who never acts: 3 missed phases → botControlled; takeSeat hands it back
         { const cs=await room5(); const idle=cs.find(c=>c.role!=="villager")||cs[4]; const others=cs.filter(c=>c!==idle); const idleSeat=idle.seat;
           // drivers: mafia never targets the idle seat, everybody votes skip → the idle seat survives long enough to miss three phases
-          const drive2=(c)=>{ const r=c.st; if(!r||r.status!=="playing") return; const me=r.players[c.seat]; if(!me||!me.alive) return; const living=r.players.map((p,i)=>p.alive&&!p.left?i:-1).filter(i=>i>=0); if(r.phase==="night"){ if(c.role==="mafia"&&!(r.yourAct&&r.yourAct.kill!=null)){ const t=living.filter(i=>!(r.mafiaSeats||[]).includes(i)&&i!==idleSeat); if(t.length) c.emit("act",{kill:pick(t)}); } else if(c.role==="doctor"&&!(r.yourAct&&r.yourAct.save!=null)) c.emit("act",{save:c.seat}); else if(c.role==="detective"&&!(r.yourAct&&r.yourAct.probe!=null)){ const t=living.filter(i=>i!==c.seat); if(t.length) c.emit("act",{probe:pick(t)}); } } else if(r.phase==="vote"&&!(r.votes&&r.votes[c.seat]!==undefined)) c.emit("vote",{target:-1}); };
+          const drive2=(c)=>{ const r=c.st; if(!r||r.status!=="playing") return; const me=r.players[c.seat]; if(!me||!me.alive) return; const living=r.players.map((p,i)=>p.alive&&!p.left?i:-1).filter(i=>i>=0); if(r.phase==="night"){ if(c.role==="mafia"&&!(r.yourAct&&r.yourAct.kill!=null)){ const t=living.filter(i=>!(r.mafiaSeats||[]).includes(i)&&i!==idleSeat); if(t.length) c.emit("act",{kill:pick(t)}); } else if(c.role==="doctor"&&!(r.yourAct&&r.yourAct.save!=null)) c.emit("act",{save:c.seat}); else if(c.role==="detective"&&!(r.yourAct&&r.yourAct.probe!=null)){ const t=living.filter(i=>i!==c.seat); if(t.length) c.emit("act",{probe:pick(t)}); } } else if(r.phase==="vote"&&r.yourVote===undefined) c.emit("vote",{target:-1}); };
           others.forEach(c=>c.on("state",()=>setTimeout(()=>drive2(c),8)));
           const flipped=await until(()=>idle.st&&idle.st.players[idleSeat]&&idle.st.players[idleSeat].botControlled, VOTE*10);
           if(!flipped) throw new Error("AFK: idle seat ("+idle.role+") never became botControlled (status "+(idle.st&&idle.st.status)+")");
@@ -235,14 +256,12 @@ function t16Unit(){
           const R=mk2("R"); await sleep(150); R.emit("join",{code,playerId:hid}); await until(()=>R.st,2000);
           if(!R.st||R.st.status!=="over") throw new Error("AFK: game with the only human gone did not finish (status "+(R.st&&R.st.status)+", phase "+(R.st&&R.st.phase)+")");
           console.log("PASS AFK game finished with the absent human's seat auto-played — winner "+R.st.winner); R.disconnect(); }
-      } finally { srv.kill(); }
+      } finally { await srv.stop(); }
     }
     // ---- Test 4 (T2 vote threshold): 5, 8 and 12 humans under each rule, 2 votes on one player, the rest skip ----
     {
-      const { spawn } = require("child_process");
-      const P=3222, URL2="http://localhost:"+P;
-      const srv = spawn(process.execPath, ["server.js"], { env: { ...process.env, PORT:String(P), REVEAL_MS:"40", NIGHT_MS:"4000", DAY_MS:"60", VOTE_MS:"4000", AFK_MS:"4000", BOT_MS:"5" }, stdio:"ignore" });
-      await sleep(600);
+      const P=spawnPort(3222), URL2="http://localhost:"+P;
+      const srv = await startServer(P, { REVEAL_MS:"40", NIGHT_MS:"4000", DAY_MS:"60", VOTE_MS:"4000", AFK_MS:"4000", BOT_MS:"5" });
       const mk2=(name)=>{ const c=io(URL2,{transports:["websocket"],reconnection:false}); c.st=null; c.seat=-1; c.role=null; c.on("state",({room,mySeat})=>{ c.st=room; c.seat=mySeat; if(room.yourRole) c.role=room.yourRole; }); return c; };
       const wait=async(fn,ms=8000)=>{ const t0=Date.now(); while(Date.now()-t0<ms){ if(fn()) return true; await sleep(15);} return false; };
       const scenario=async(n, rule, votesFor)=>{
@@ -277,15 +296,13 @@ function t16Unit(){
           await wait(()=>cs[0].st.phase!=="vote"||cs[0].st.status==="over", 9000);
           const after=cs[0].st.players.filter(p=>p.alive).length; if(after!==before) throw new Error("T2 tie eliminated someone: "+cs[0].st.log);
           console.log("PASS T2 tie under plurality spares everyone"); cs.forEach(c=>c.disconnect()); }
-      } finally { srv.kill(); }
+      } finally { await srv.stop(); }
     }
 
     // ---- T3 host handover: host disconnects during play → another human becomes host ----
     {
-      const { spawn } = require("child_process");
-      const P=3231, URL2="http://localhost:"+P;
-      const srv = spawn(process.execPath, ["server.js"], { env: { ...process.env, PORT:String(P), REVEAL_MS:"40", NIGHT_MS:"4000", DAY_MS:"4000", VOTE_MS:"4000", AFK_MS:"4000", BOT_MS:"5" }, stdio:"ignore" });
-      await sleep(600);
+      const P=spawnPort(3231), URL2="http://localhost:"+P;
+      const srv = await startServer(P, { REVEAL_MS:"40", NIGHT_MS:"4000", DAY_MS:"4000", VOTE_MS:"4000", AFK_MS:"4000", BOT_MS:"5" });
       const mk2=(name)=>{ const c=io(URL2,{transports:["websocket"],reconnection:false}); c.st=null; c.seat=-1; c.logs=[]; c.on("state",({room,mySeat})=>{ c.st=room; c.seat=mySeat; if(room&&room.log) c.logs.push(room.log); }); return c; };
       const wait=async(fn,ms=6000)=>{ const t0=Date.now(); while(Date.now()-t0<ms){ if(fn()) return true; await sleep(15);} return false; };
       try {
@@ -300,9 +317,29 @@ function t16Unit(){
         console.log("PASS T3 host handover — host disconnected mid-game, next connected human is host");
         
         cs.forEach(c=>c.disconnect());
-      } finally { srv.kill(); }
+      } finally { await srv.stop(); }
     }
+    // ---- moderation (2026-10-18): what players type is kept friendly (moderation.js) ----
+    {
+      const P=spawnPort(3231), URL2="http://localhost:"+P;
+      const srv = await startServer(P, { BOT_MS:"5" });
+      const wait=async(fn,ms=30000)=>{ const t0=Date.now(); while(Date.now()-t0<ms){ if(fn()) return true; await sleep(15);} return false; };
+      try {
+        const c=io(URL2,{transports:["websocket"],reconnection:false}); let st=null, code=null; c.on("state",({room})=>{ st=room; }); c.on("joined",j=>{ code=j.code; });
+        c.emit("create",{name:"Mo",playerId:"mod"+Math.random(),avatar:"🦊"}); await wait(()=>code);
+        c.emit("chat",{ t:"kill yourself" });
+        if(!(await wait(()=>st&&st.chat.some(m=>m.t==="(message removed)")))) throw new Error("MOD: a push to self-harm was not removed");
+        await sleep(800);
+        c.emit("chat",{ t:"what the fuck" });
+        if(!(await wait(()=>st.chat.some(m=>m.t==="what the f***")))) throw new Error("MOD: swearing was not starred");
+        console.log("PASS moderation — chat: a push to self-harm removed, swearing starred");
+        c.disconnect();
+      } finally { await srv.stop(); }
+    }
+    // ---- worlds (2026-09): S1 ready to vote, S2 hidden night acts, QA notes GN-05/07/20/26/30/48 ----
+    { const W = require("./worlds.js"); W.unit(require("../server.js")); await W.sockets({ io, startServer, port: spawnPort(3241) }); }
     console.log("ALL MAFIA TESTS PASS");
+    if (mainSrv) await mainSrv.stop();
     process.exit(0);
-  }catch(e){ console.error("FAIL:", e.message); process.exit(1); }
+  }catch(e){ console.error("FAIL:", e.message); if (mainSrv) mainSrv.kill(); process.exit(1); }
 })();

@@ -250,8 +250,11 @@
   <div class="grid" id="pgrid"></div>
   <div class="actionhint" id="actionhint"></div>
   <button class="btn hidden" id="seatBackBtn" style="width:auto;margin:6px auto 0;display:block" onclick="socket.emit('takeSeat')">Take my seat back</button>
-  <div class="voterow hidden" id="voterow">
+  <div class="voterow hidden" id="gameVoteRow">
     <button class="btn plain" id="skipBtn">Skip vote</button>
+  </div>
+  <div class="voterow hidden" id="readyRow">
+    <button class="btn blue" id="readyBtn">Ready to vote</button>
   </div>
   <div class="log" id="log"></div>
   <div class="overbox hidden" id="overbox">
@@ -376,8 +379,8 @@ function drawAv(){ $("avrow").innerHTML = AV.map(a=>`<button class="avchip${a===
 drawAv();
 $("avrow").addEventListener("click",(e)=>{ const b=e.target.closest(".avchip"); if(!b) return; myAvatar=b.getAttribute("data-a"); localStorage.setItem("mAvatar",myAvatar); drawAv(); });
 function myName(){ const n=$("nameIn").value.trim(); if(!n){ toast("Pick a name first."); return null; } localStorage.setItem("mName",n); return n; }
-$("createBtn").onclick = ()=>{ const n=myName(); if(n) socket.emit("create",{ name:n, playerId, avatar:myAvatar }); };
-$("joinBtn").onclick = ()=>{ const n=myName(); const c=$("codeIn").value.trim().toUpperCase(); if(!c) return toast("Enter the room code."); if(n) socket.emit("join",{ code:c, name:n, playerId, avatar:myAvatar }); };
+$("createBtn").onclick = ()=>{ const n=myName(); if(n) socket.emit("create",{ name:n, playerId, avatar:myAvatar, caps:CAPS }); };
+$("joinBtn").onclick = ()=>{ const n=myName(); const c=$("codeIn").value.trim().toUpperCase(); if(!c) return toast("Enter the room code."); if(n) socket.emit("join",{ code:c, name:n, playerId, avatar:myAvatar, caps:CAPS }); };
 socket.on("err",(m)=>toast(m));
 socket.on("joined",({code})=>{ localStorage.setItem("mRoom",code); });
 window.addEventListener("load",()=>{
@@ -385,7 +388,7 @@ window.addEventListener("load",()=>{
   // by an earlier session, or this socket ends up in two rooms with interleaved states.
   if (window.GN && (GN.code || GN.create || GN.prewarm)) return;
   const c=localStorage.getItem("mRoom"); const n=localStorage.getItem("mName");
-  if (c && n) socket.emit("join",{ code:c, name:n, playerId, avatar:myAvatar }); });
+  if (c && n) socket.emit("join",{ code:c, name:n, playerId, avatar:myAvatar, caps:CAPS }); });
 
 /* lobby */
 $("voterow").addEventListener("click",(e)=>{ const b=e.target.closest("[data-rule]"); if(b) socket.emit("settings",{voteRule:b.dataset.rule}); });
@@ -432,6 +435,10 @@ function renderLobby(r){
 let picked = null;
 $("rolecard").onclick = ()=>$("rolecard").classList.toggle("show");
 $("skipBtn").onclick = ()=>socket.emit("vote",{ target:-1 });
+$("readyBtn").onclick = ()=>{ const r=S.room; if(!r) return; const me=r.players[S.mySeat]; socket.emit("ready",{ on: !(me && me.ready) }); };
+/* What this client can do beyond the original protocol (the server acts on it only if it knows it). */
+const CAPS = ["ready","hunch"];
+function has(r,f){ return !!(r && r.features && r.features.includes(f)); }
 $("rematchBtn").onclick = ()=>socket.emit("rematch");
 
 function phaseInfo(r){
@@ -447,6 +454,7 @@ function nightSub(r){
   if (r.yourRole==="mafia") return "Pick tonight's victim. Your partners see your pick.";
   if (r.yourRole==="detective") return "Pick someone to investigate.";
   if (r.yourRole==="doctor") return "Pick someone to protect.";
+  if (has(r,"hunch")) return "Everyone picks at night. Who will the Shadows take?";
   return "The town sleeps… try to look innocent.";
 }
 
@@ -454,11 +462,13 @@ function canTapNow(r){
   const me = r.players[S.mySeat];
   if (!me || !me.alive || me.left) return null;
   if (r.phase==="night" && ["mafia","detective","doctor"].includes(r.yourRole)) return "act";
+  if (r.phase==="night" && has(r,"hunch")) return "hunch";   // S2: sleepers choose too, so nobody can tell who holds a power
   if (r.phase==="vote") return "vote";
   return null;
 }
 function myPickSeat(r){
   if (r.phase==="vote") return r.yourVote != null && r.yourVote >= 0 ? r.yourVote : null;
+  if (canTapNow(r)==="hunch") return r.yourHunch != null ? r.yourHunch : null;
   const a = r.yourAct || {};
   return a.kill ?? a.save ?? a.probe ?? null;
 }
@@ -494,10 +504,11 @@ function renderGame(r){
     const revealedRole = r.revealed && r.revealed[i];
     let status = dead ? (revealedRole ? "was " + (ROLES[revealedRole]?ROLES[revealedRole].t:revealedRole) : "out") : (p.botControlled?"🤖 bot playing":(p.connected?"":"reconnecting…"));
     if (!dead && r.phase==="vote") status = p.voted ? "voted" : "thinking…";
+    if (!dead && r.phase==="day" && p.ready) status = "ready to vote";
     if (!dead && r.phase==="night" && iAmMafia && r.mafiaPicks && r.mafiaPicks[i]!=null && mafiaSeats.includes(i))
       status = "targets " + esc(r.players[r.mafiaPicks[i]] ? r.players[r.mafiaPicks[i]].name : "?");
     const tappable = mode && !dead && i!==S.mySeat && !(mode==="act" && iAmMafia && mafiaSeats.includes(i));
-    const selfOk = mode==="act" && r.yourRole==="doctor" && i===S.mySeat && !dead;
+    const selfOk = (mode==="act" && r.yourRole==="doctor" || mode==="hunch") && i===S.mySeat && !dead;
     const votes = r.voteTally && r.voteTally[i];
     return `<div class="pcard${dead?" dead":""}${i===S.mySeat?" me":""}${(tappable||selfOk)?" tappable":""}${mine===i?" picked":""}${iAmMafia&&mafiaSeats.includes(i)&&!dead?" mate":""}" data-s="${i}" data-tap="${(tappable||selfOk)?1:0}">
       ${votes?`<span class="votes">${votes}</span>`:""}
@@ -515,10 +526,15 @@ function renderGame(r){
   else if (me && me.botControlled) $("actionhint").innerHTML = "A bot is playing your role — <b>take your seat back</b> when you are ready.";
   else if (mode==="act") $("actionhint").innerHTML = mine!=null ? `Locked on <b>${esc(r.players[mine].name)}</b> — tap another to change.` : "Tap a player card to choose.";
   else if (mode==="vote") $("actionhint").innerHTML = mine!=null ? `Voting <b>${esc(r.players[mine].name)}</b> — tap to change, or skip.` : "Tap a player to vote.";
+  else if (mode==="hunch") $("actionhint").innerHTML = mine!=null ? `Your hunch: <b>${esc(r.players[mine].name)}</b> — tap another to change.` : "Tap who you think the Shadows will take.";
   else if (r.phase==="night") $("actionhint").innerHTML = "Nothing for you to do tonight. Look asleep.";
   else $("actionhint").innerHTML = "";
 
-  $("voterow").classList.toggle("hidden", !(mode==="vote"));
+  $("gameVoteRow").classList.toggle("hidden", !(mode==="vote"));
+  // S1: "Ready to vote" by day, for a living human (the server lists "ready" in features when it has it)
+  const canReady = has(r,"ready") && r.phase==="day" && r.status==="playing" && me && me.alive && !me.left && !me.botControlled;
+  $("readyRow").classList.toggle("hidden", !canReady);
+  if (canReady){ const on = !!me.ready; $("readyBtn").textContent = (on ? "Ready ✓ — tap to undo" : "Ready to vote") + (r.readyNeed ? ` (${r.readyCount}/${r.readyNeed})` : ""); $("readyBtn").className = "btn " + (on ? "plain" : "blue"); }
   $("log").textContent = r.log || "";
   $("log").classList.toggle("hidden", /^Night \d+\. The town sleeps\.$/.test(r.log || ""));   // the phase card already says it
   $("overbox").classList.toggle("hidden", r.status!=="over");
@@ -539,6 +555,7 @@ $("pgrid").addEventListener("click",(e)=>{
   const r = S.room; if(!r) return;
   const mode = canTapNow(r);
   if (mode==="vote") socket.emit("vote",{ target:t });
+  else if (mode==="hunch") socket.emit("act",{ hunch:t });
   else if (mode==="act"){
     if (r.yourRole==="mafia") socket.emit("act",{ kill:t });
     else if (r.yourRole==="doctor") socket.emit("act",{ save:t });
