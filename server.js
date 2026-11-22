@@ -4,6 +4,8 @@ const crypto = require("crypto");
 const express = require("express");
 const { Server } = require("socket.io");
 const Reactions = require("./reactions");   // the cartoon stickers (2026-10-15)
+const Voice = require("./voice");   // voice chat in private rooms, EOS (2026-11-18; the file every server shares)
+const Played = require("./friendsplayed");   // Friends: "last played with" when a game ends (2026-11-19; the file every server shares)
 const Quick = require("./quickmatch");   // Quick Play: 2.5 s to find people, bots fill the empty seats (2026-11-01; the file every server shares)
 const Plus = require("./plus");   // GameNest Plus: the room's flag and each player's look (2026-10-16)
 const Moderation = require("./moderation");
@@ -755,6 +757,7 @@ function stateFor(room, seat) {
   st.serverNow = Date.now();  // GN-48: the server's clock, for phones whose clock is off
   Object.assign(st, Reactions.view(room));   // 2026-10-15: reactionsOn and the last reactions
   Object.assign(st, Quick.view(room));   // quick play (2026-11-01): quick { searching, seats, fillAt, now } while a quick room is finding people
+  Object.assign(st, Voice.view(room), Played.view(room, "mafia"));   // voice chat gnVoice { on, peers }; Friends played hook (2026-11-19)
   /* 2026-11-01 (after every old field): the sizes of the sides, why the last phase ended, and, once the game is over, the one
      outcome every result screen reads (outcomeFor). */
   st.teams = teamsOf(room);
@@ -935,6 +938,7 @@ io.on("connection", (socket) => {
     catch (e) { console.error(`[${new Date().toISOString()}] ${event} failed:`, e && e.stack || e); }
   });
   const currentRoom = () => rooms.get(socket.data.code);
+  Voice.wire({ on: on, room: currentRoom, me: () => socket.data.playerId, bump: bump, emit: (ev, d) => socket.emit(ev, d) });   // voice chat in private rooms (2026-11-18)
   Reactions.wire({ on, room: currentRoom, me: () => socket.data.playerId, isHost: (r) => r.host === socket.data.playerId, bump });
   const attach = (code) => {
     socket.data.code = code;

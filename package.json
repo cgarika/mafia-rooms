@@ -5,7 +5,7 @@
   "main": "server.js",
   "scripts": {
     "test": "node test/scratch.js",
-    "test:suites": "TEST_SPAWN_MAIN=1 node test/rules.js && node test/moderation.js && node test/bot_talk.js && node test/deck.js && TEST_PORT4=${TEST_PORT4:-3581} node test/outcome.js && TEST_PORT5=${TEST_PORT5:-3591} node test/botlife.js && TEST_PORT6=${TEST_PORT6:-3601} node test/quick.js && TEST_PORT7=${TEST_PORT7:-3611} node test/chat_time.js && node test/plus_wallet.js && node test/roomcode.js && TEST_PORT8=${TEST_PORT8:-3621} node test/rolepick.js",
+    "test:suites": "TEST_SPAWN_MAIN=1 node test/rules.js && node test/moderation.js && node test/bot_talk.js && node test/deck.js && TEST_PORT4=${TEST_PORT4:-3581} node test/outcome.js && TEST_PORT5=${TEST_PORT5:-3591} node test/botlife.js && TEST_PORT6=${TEST_PORT6:-3601} node test/quick.js && TEST_PORT7=${TEST_PORT7:-3611} node test/chat_time.js && node test/plus_wallet.js && node test/roomcode.js && TEST_PORT8=${TEST_PORT8:-3621} node test/rolepick.js && node test/voice.js && node test/friendsplayed.js",
     "start": "node server.js"
   },
   "keywords": [],

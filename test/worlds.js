@@ -71,7 +71,7 @@ function mkRoom(phase, opts = {}) {
 function unit(S) {
   const { stateFor, nightDone, pendingActors, readyStatus, clean, cleanAvatar, FEATURES } = S;
   // ---- oracle: every original field unchanged, for every seat, in every phase ----
-  const NEW_KEYS = ["deck", "seats", "botRoom", "readyCount", "readyNeed", "yourHunch", "hunchLog", "features", "serverNow", "reactionsOn", "reactions", "quick", "ranked", "rankedModel", "rankedOn", "rated", "teams", "lastEnd", "outcome"];
+  const NEW_KEYS = ["gnVoice", "deck", "seats", "botRoom", "readyCount", "readyNeed", "yourHunch", "hunchLog", "features", "serverNow", "reactionsOn", "reactions", "quick", "ranked", "rankedModel", "rankedOn", "rated", "teams", "lastEnd", "outcome"];
   for (const phase of ["lobby", "reveal", "night", "day", "vote", "over"]) {
     for (const caps of [false, true]) {
       const room = mkRoom(phase, { caps });
